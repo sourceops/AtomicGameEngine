@@ -1,10 +1,28 @@
+//
+// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+
 #ifndef ATOMIC_PLATFORM_WINDOWS
 
-
 #include "IPCUnix.h"
-
-namespace Atomic
-{
 
 #include <unistd.h>
 #include <signal.h>
@@ -14,6 +32,13 @@ namespace Atomic
 #ifdef ATOMIC_PLATFORM_OSX
 #include <libproc.h>
 #endif
+
+#ifdef ATOMIC_PLATFORM_LINUX
+#include <sys/wait.h>
+#endif
+
+namespace Atomic
+{
 
 #define HANDLE_EINTR(x) ({ \
     typeof(x) __eintr_result__; \
@@ -33,7 +58,7 @@ bool SilenceSocket(int fd) {
                         &nosigpipe, sizeof nosigpipe)) {
         return false;
     }
-#endif    
+#endif
     return true;
 }
 
@@ -155,15 +180,22 @@ bool IPCProcess::IsRunning()
     if (pid_ == -1)
         return false;
 
-#ifdef __APPLE__
+#if defined(ATOMIC_PLATFORM_OSX)
     char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
     int ret = proc_pidpath (pid_, pathbuf, sizeof(pathbuf));
     if ( ret > 0 )
     {
         return true;
     }
+#elif defined(ATOMIC_PLATFORM_LINUX)
+    int status;
+    pid_t childPid = waitpid( pid_, &status, WNOHANG );
+    bool childRunning = !WIFEXITED( status ) && !WIFSIGNALED( status ) && !WIFSTOPPED( status );
+    if ( childPid != pid_ || childRunning )
+    {
+        return true;
+    }
 #else
-
     // this doesn't seem to work on OSX?
     if (kill(pid_, 0) == 0)
         return true;

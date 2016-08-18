@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +20,11 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
-#include "../Core/Thread.h"
+#include "../Core/EventProfiler.h"
+#include "../IO/Log.h"
 
 #include "../DebugNew.h"
 
@@ -52,13 +54,16 @@ void RemoveNamedAttribute(HashMap<StringHash, Vector<AttributeInfo> >& attribute
 }
 
 Context::Context() :
-    eventHandler_(0)
+    eventHandler_(0),
+// ATOMIC BEGIN
+    editorContext_(false)
+// ATOMIC END
 {
-    #ifdef ANDROID
-    // Always reset the random seed on Android, as the Atomic library might not be unloaded between runs
+#ifdef __ANDROID__
+    // Always reset the random seed on Android, as the Urho3D library might not be unloaded between runs
     SetRandomSeed(1);
-    #endif
-    
+#endif
+
     // Set the main thread ID (assuming the Context is created in it)
     Thread::SetMainThread();
 }
@@ -72,24 +77,26 @@ Context::~Context()
     RemoveSubsystem("Input");
     RemoveSubsystem("Renderer");
     RemoveSubsystem("Graphics");
-    
+
     subsystems_.Clear();
     factories_.Clear();
-    
+
     // Delete allocated event data maps
     for (PODVector<VariantMap*>::Iterator i = eventDataMaps_.Begin(); i != eventDataMaps_.End(); ++i)
         delete *i;
     eventDataMaps_.Clear();
 }
 
-SharedPtr<Object> Context::CreateObject(StringHash objectType)
+// ATOMIC BEGIN
+SharedPtr<Object> Context::CreateObject(StringHash objectType, const XMLElement& source)
 {
     HashMap<StringHash, SharedPtr<ObjectFactory> >::ConstIterator i = factories_.Find(objectType);
     if (i != factories_.End())
-        return i->second_->CreateObject();
+        return i->second_->CreateObject(source);
     else
         return SharedPtr<Object>();
 }
+// ATOMIC END
 
 void Context::RegisterFactory(ObjectFactory* factory)
 {
@@ -128,7 +135,11 @@ void Context::RegisterAttribute(StringHash objectType, const AttributeInfo& attr
 {
     // None or pointer types can not be supported
     if (attr.type_ == VAR_NONE || attr.type_ == VAR_VOIDPTR || attr.type_ == VAR_PTR)
+    {
+        ATOMIC_LOGWARNING("Attempt to register unsupported attribute type " + Variant::GetTypeName(attr.type_) + " to class " +
+            GetTypeName(objectType));
         return;
+    }
 
     attributes_[objectType].Push(attr);
 
@@ -154,7 +165,7 @@ VariantMap& Context::GetEventDataMap()
     unsigned nestingLevel = eventSenders_.Size();
     while (eventDataMaps_.Size() < nestingLevel + 1)
         eventDataMaps_.Push(new VariantMap());
-    
+
     VariantMap& ret = *eventDataMaps_[nestingLevel];
     ret.Clear();
     return ret;
@@ -163,6 +174,13 @@ VariantMap& Context::GetEventDataMap()
 
 void Context::CopyBaseAttributes(StringHash baseType, StringHash derivedType)
 {
+    // Prevent endless loop if mistakenly copying attributes from same class as derived
+    if (baseType == derivedType)
+    {
+        ATOMIC_LOGWARNING("Attempt to copy base attributes to itself for class " + GetTypeName(baseType));
+        return;
+    }
+
     const Vector<AttributeInfo>* baseAttributes = GetAttributes(baseType);
     if (baseAttributes)
     {
@@ -183,6 +201,17 @@ Object* Context::GetSubsystem(StringHash type) const
         return i->second_;
     else
         return 0;
+}
+
+const Variant& Context::GetGlobalVar(StringHash key) const
+{
+    VariantMap::ConstIterator i = globalVars_.Find(key);
+    return i != globalVars_.End() ? i->second_ : Variant::EMPTY;
+}
+
+void Context::SetGlobalVar(StringHash key, const Variant& value)
+{
+    globalVars_[key] = value;
 }
 
 Object* Context::GetEventSender() const
@@ -253,6 +282,34 @@ void Context::RemoveEventReceiver(Object* receiver, Object* sender, StringHash e
     HashSet<Object*>* group = GetEventReceivers(sender, eventType);
     if (group)
         group->Erase(receiver);
+}
+
+void Context::BeginSendEvent(Object* sender, StringHash eventType)
+{
+#ifdef URHO3D_PROFILING
+    if (EventProfiler::IsActive())
+    {
+        EventProfiler* eventProfiler = GetSubsystem<EventProfiler>();
+        if (eventProfiler)
+            eventProfiler->BeginBlock(eventType);
+    }
+#endif
+
+    eventSenders_.Push(sender);
+}
+
+void Context::EndSendEvent()
+{
+    eventSenders_.Pop();
+
+#ifdef URHO3D_PROFILING
+    if (EventProfiler::IsActive())
+    {
+        EventProfiler* eventProfiler = GetSubsystem<EventProfiler>();
+        if (eventProfiler)
+            eventProfiler->EndBlock();
+    }
+#endif
 }
 
 }

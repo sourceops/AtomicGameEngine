@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -33,7 +33,8 @@ class DynamicNavigationMesh;
 /// Obstacle for dynamic navigation mesh.
 class ATOMIC_API Obstacle : public Component
 {
-    OBJECT(Obstacle)
+    ATOMIC_OBJECT(Obstacle, Component)
+
     friend class DynamicNavigationMesh;
 
 public:
@@ -50,10 +51,13 @@ public:
 
     /// Get the height of this obstacle.
     float GetHeight() const { return height_; }
+
     /// Set the height of this obstacle.
     void SetHeight(float);
+
     /// Get the blocking radius of this obstacle.
     float GetRadius() const { return radius_; }
+
     /// Set the blocking radius of this obstacle.
     void SetRadius(float);
 
@@ -66,8 +70,8 @@ public:
     void DrawDebugGeometry(bool depthTest);
 
 protected:
-    /// Handle node being assigned, identify our DynamicNavigationMesh.
-    virtual void OnNodeSet(Node* node);
+    /// Handle scene being assigned, identify our DynamicNavigationMesh.
+    virtual void OnSceneSet(Scene* scene);
 
 private:
     /// Radius of this obstacle.

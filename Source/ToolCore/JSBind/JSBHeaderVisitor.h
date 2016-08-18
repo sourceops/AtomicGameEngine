@@ -1,6 +1,24 @@
-// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #pragma once
 
@@ -23,6 +41,7 @@ namespace ToolCore
 {
 
 class JSBHeader;
+class JSBPrimitiveType;
 
 
 class JSBHeaderVisitor : public SymbolVisitor
@@ -163,6 +182,7 @@ public:
                         FullySpecifiedType pfst = tnid->templateArgumentAt(0);
                         type = pfst.type();
                         isTemplate = true;
+                        isSharedPtr = true;
                     }
                 }
             }
@@ -179,7 +199,17 @@ public:
 
 
         if (!jtype)
+        {
             jtype = processTypeConversion(type);
+
+            // explicit script string -> StringHash required
+            if (jtype && jtype->asStringHashType())
+                isReference = false;
+
+            if (fst.isUnsigned() && jtype->asPrimitiveType())
+                jtype->asPrimitiveType()->isUnsigned_ = true;
+
+        }
 
         if (!jtype)
             return NULL;
@@ -268,6 +298,12 @@ public:
         if (name.StartsWith("~"))
             jfunction->SetDestructor();
 
+        if (function->isVirtual())
+            jfunction->SetVirtual(true);
+
+        if (function->isStatic())
+            jfunction->SetStatic(true);
+
         // see if we support return type
         if (function->hasReturnType() && !function->returnType().type()->isVoidType())
         {
@@ -284,19 +320,31 @@ public:
             for (unsigned i = 0; i < function->argumentCount(); i++)
             {
                 Symbol* symbol = function->argumentAt(i);
+
                 if (symbol->isArgument())
                 {
                     Argument* arg = symbol->asArgument();
 
                     JSBFunctionType* ftype = processFunctionArgType(arg);
+
                     if (!ftype)
-                        return NULL;
+                    {
+                        // if we don't have an initializer, the function cannot be bound
+                        // as unscriptable type
+                        if (!arg->hasInitializer())
+                            return NULL;
+
+                        // otherwise, break and the optional args will be ignored
+                        break;
+                    }
 
                     if (arg->hasInitializer())
                     {
                         ftype->initializer_ = arg->initializer()->chars();
-                        if (ftype->initializer_.StartsWith("\\"))
+
+                        if (arg->initializer()->_quotedString)
                             ftype->initializer_ = "\"" + ftype->initializer_ + "\"";
+
                     }
 
                     jfunction->AddParameter(ftype);
@@ -320,7 +368,7 @@ public:
         {
             const Token &tcomment = unit_->commentAt(i);
             unsigned line;
-            unit_->getPosition(tcomment.utf16charOffset, &line);
+            unit_->getPosition(tcomment.utf16charsEnd(), &line);
 
             if (line ==  function->line() - 1)
             {
@@ -341,6 +389,34 @@ public:
                     jfunction->SetDocString(docString);
                 }
 
+            }
+
+            if (comment[0] == '/' && comment[1] == '*' && comment[2] == '*')
+            {
+                int index = 3;
+                bool foundStar = false;
+                String docString = jfunction->GetDocString();
+                while(comment[index])
+                {
+                    // did we find a star in the last loop?
+                    if (foundStar)
+                    {
+                        // We have a an end of block indicator, let's break
+                        if (comment[index] == '/' && foundStar)
+                            break;
+
+                        // This is just a star in the comment, not an end of comment indicator.  Let's keep it
+                        docString += '*';
+                    }
+                    
+                    foundStar = comment[index] == '*';
+
+                    if (!foundStar)
+                        docString += comment[index];
+
+                    index++;
+                }
+                jfunction->SetDocString(docString);
             }
 
         }
@@ -399,7 +475,26 @@ public:
             return true;
         }
 
-        module_->RegisterConstant(getNameString(decl->name()).CString());
+        String value;
+
+        const StringLiteral* init = decl->getInitializer();
+        if (init)
+        {
+            if (init->chars())
+                value = init->chars();
+        }
+
+        if (dtype.isConst())
+        {
+            if (type->isIntegerType() || _unsigned)
+            {
+                module_->RegisterConstant(getNameString(decl->name()).CString(), value, JSBPrimitiveType::Int, _unsigned);
+            }
+            else
+            {
+                module_->RegisterConstant(getNameString(decl->name()).CString(), value, JSBPrimitiveType::Float);
+            }
+        }
 
         return true;
 
@@ -427,7 +522,7 @@ public:
 
             if (!base)
             {
-                LOGINFOF("Warning: %s baseclass %s not in bindings", name.CString(), baseclassname.CString());
+                ATOMIC_LOGINFOF("Warning: %s baseclass %s not in bindings", name.CString(), baseclassname.CString());
             }
             else
             {

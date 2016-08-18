@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,18 +20,19 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
+#include "../Graphics/Texture2D.h"
 #include "../IO/Deserializer.h"
 #include "../IO/FileSystem.h"
 #include "../IO/Log.h"
 #include "../Resource/PListFile.h"
 #include "../Resource/ResourceCache.h"
-#include "../IO/Serializer.h"
+#include "../Resource/XMLFile.h"
+#include "../Resource/JSONFile.h"
 #include "../Atomic2D/Sprite2D.h"
 #include "../Atomic2D/SpriteSheet2D.h"
-#include "../Graphics/Texture2D.h"
-#include "../Resource/XMLFile.h"
 
 #include "../DebugNew.h"
 
@@ -67,7 +68,11 @@ bool SpriteSheet2D::BeginLoad(Deserializer& source)
     if (extension == ".xml")
         return BeginLoadFromXMLFile(source);
 
-    LOGERROR("Unsupported file type");
+    if (extension == ".json")
+        return BeginLoadFromJSONFile(source);
+
+
+    ATOMIC_LOGERROR("Unsupported file type");
     return false;
 }
 
@@ -79,16 +84,16 @@ bool SpriteSheet2D::EndLoad()
     if (loadXMLFile_)
         return EndLoadFromXMLFile();
 
+    if (loadJSONFile_)
+        return EndLoadFromJSONFile();
+
     return false;
 }
 
-Sprite2D* SpriteSheet2D::GetSprite(const String& name) const
+void SpriteSheet2D::SetTexture(Texture2D* texture)
 {
-    HashMap<String, SharedPtr<Sprite2D> >::ConstIterator i = spriteMapping_.Find(name);
-    if (i == spriteMapping_.End())
-        return 0;
-
-    return i->second_;
+    loadTextureName_.Clear();
+    texture_ = texture;
 }
 
 void SpriteSheet2D::DefineSprite(const String& name, const IntRect& rectangle, const Vector2& hotSpot, const IntVector2& offset)
@@ -110,12 +115,21 @@ void SpriteSheet2D::DefineSprite(const String& name, const IntRect& rectangle, c
     spriteMapping_[name] = sprite;
 }
 
+Sprite2D* SpriteSheet2D::GetSprite(const String& name) const
+{
+    HashMap<String, SharedPtr<Sprite2D> >::ConstIterator i = spriteMapping_.Find(name);
+    if (i == spriteMapping_.End())
+        return 0;
+
+    return i->second_;
+}
+
 bool SpriteSheet2D::BeginLoadFromPListFile(Deserializer& source)
 {
     loadPListFile_ = new PListFile(context_);
     if (!loadPListFile_->Load(source))
     {
-        LOGERROR("Could not load sprite sheet");
+        ATOMIC_LOGERROR("Could not load sprite sheet");
         loadPListFile_.Reset();
         return false;
     }
@@ -123,9 +137,9 @@ bool SpriteSheet2D::BeginLoadFromPListFile(Deserializer& source)
     SetMemoryUse(source.GetSize());
 
     const PListValueMap& root = loadPListFile_->GetRoot();
-    const PListValueMap& metadata = root["metadata"].GetValueMap();
-    const String& textureFileName = metadata["realTextureFileName"].GetString();
-    
+    const PListValueMap& metadata = root["metadata"]->GetValueMap();
+    const String& textureFileName = metadata["realTextureFileName"]->GetString();
+
     // If we're async loading, request the texture now. Finish during EndLoad().
     loadTextureName_ = GetParentPath(GetName()) + textureFileName;
     if (GetAsyncLoadState() == ASYNC_LOADING)
@@ -140,39 +154,38 @@ bool SpriteSheet2D::EndLoadFromPListFile()
     texture_ = cache->GetResource<Texture2D>(loadTextureName_);
     if (!texture_)
     {
-        LOGERROR("Could not load texture " + loadTextureName_);
+        ATOMIC_LOGERROR("Could not load texture " + loadTextureName_);
         loadXMLFile_.Reset();
         loadTextureName_.Clear();
         return false;
     }
 
     const PListValueMap& root = loadPListFile_->GetRoot();
-
-    const PListValueMap& frames = root["frames"].GetValueMap();
+    const PListValueMap& frames = root["frames"]->GetValueMap();
     for (PListValueMap::ConstIterator i = frames.Begin(); i != frames.End(); ++i)
     {
         String name = i->first_.Split('.')[0];
 
         const PListValueMap& frameInfo = i->second_.GetValueMap();
-        if (frameInfo["rotated"].GetBool())
+        if (frameInfo["rotated"]->GetBool())
         {
-            LOGWARNING("Rotated sprite is not support now");
+            ATOMIC_LOGWARNING("Rotated sprite is not support now");
             continue;
         }
 
-        IntRect rectangle = frameInfo["frame"].GetIntRect();
+        IntRect rectangle = frameInfo["frame"]->GetIntRect();
         Vector2 hotSpot(0.5f, 0.5f);
         IntVector2 offset(0, 0);
 
-        IntRect sourceColorRect = frameInfo["sourceColorRect"].GetIntRect();
+        IntRect sourceColorRect = frameInfo["sourceColorRect"]->GetIntRect();
         if (sourceColorRect.left_ != 0 && sourceColorRect.top_ != 0)
         {
             offset.x_ = -sourceColorRect.left_;
             offset.y_ = -sourceColorRect.top_;
 
-            IntVector2 sourceSize = frameInfo["sourceSize"].GetIntVector2();
+            IntVector2 sourceSize = frameInfo["sourceSize"]->GetIntVector2();
             hotSpot.x_ = ((float)offset.x_ + sourceSize.x_ / 2) / rectangle.Width();
-            hotSpot.y_ = 1.0f - ((float)offset.y_ + sourceSize.y_/ 2) / rectangle.Height();
+            hotSpot.y_ = 1.0f - ((float)offset.y_ + sourceSize.y_ / 2) / rectangle.Height();
         }
 
         DefineSprite(name, rectangle, hotSpot, offset);
@@ -188,7 +201,7 @@ bool SpriteSheet2D::BeginLoadFromXMLFile(Deserializer& source)
     loadXMLFile_ = new XMLFile(context_);
     if (!loadXMLFile_->Load(source))
     {
-        LOGERROR("Could not load sprite sheet");
+        ATOMIC_LOGERROR("Could not load sprite sheet");
         loadXMLFile_.Reset();
         return false;
     }
@@ -198,7 +211,7 @@ bool SpriteSheet2D::BeginLoadFromXMLFile(Deserializer& source)
     XMLElement rootElem = loadXMLFile_->GetRoot("TextureAtlas");
     if (!rootElem)
     {
-        LOGERROR("Invalid sprite sheet");
+        ATOMIC_LOGERROR("Invalid sprite sheet");
         loadXMLFile_.Reset();
         return false;
     }
@@ -217,7 +230,7 @@ bool SpriteSheet2D::EndLoadFromXMLFile()
     texture_ = cache->GetResource<Texture2D>(loadTextureName_);
     if (!texture_)
     {
-        LOGERROR("Could not load texture " + loadTextureName_);
+        ATOMIC_LOGERROR("Could not load texture " + loadTextureName_);
         loadXMLFile_.Reset();
         loadTextureName_.Clear();
         return false;
@@ -253,6 +266,84 @@ bool SpriteSheet2D::EndLoadFromXMLFile()
     }
 
     loadXMLFile_.Reset();
+    loadTextureName_.Clear();
+    return true;
+}
+
+bool SpriteSheet2D::BeginLoadFromJSONFile(Deserializer& source)
+{
+    loadJSONFile_ = new JSONFile(context_);
+    if (!loadJSONFile_->Load(source))
+    {
+        ATOMIC_LOGERROR("Could not load sprite sheet");
+        loadJSONFile_.Reset();
+        return false;
+    }
+
+    SetMemoryUse(source.GetSize());
+
+    JSONValue rootElem = loadJSONFile_->GetRoot();
+    if (rootElem.IsNull())
+    {
+        ATOMIC_LOGERROR("Invalid sprite sheet");
+        loadJSONFile_.Reset();
+        return false;
+    }
+
+    // If we're async loading, request the texture now. Finish during EndLoad().
+    loadTextureName_ = GetParentPath(GetName()) + rootElem.Get("imagePath").GetString();
+    if (GetAsyncLoadState() == ASYNC_LOADING)
+        GetSubsystem<ResourceCache>()->BackgroundLoadResource<Texture2D>(loadTextureName_, true, this);
+
+    return true;
+}
+
+bool SpriteSheet2D::EndLoadFromJSONFile()
+{
+    ResourceCache* cache = GetSubsystem<ResourceCache>();
+    texture_ = cache->GetResource<Texture2D>(loadTextureName_);
+    if (!texture_)
+    {
+        ATOMIC_LOGERROR("Could not load texture " + loadTextureName_);
+        loadJSONFile_.Reset();
+        loadTextureName_.Clear();
+        return false;
+    }
+
+    JSONValue rootVal = loadJSONFile_->GetRoot();
+    JSONArray subTextureArray = rootVal.Get("subtextures").GetArray();
+
+    for (unsigned i = 0; i < subTextureArray.Size(); i++)
+    {
+        const JSONValue& subTextureVal = subTextureArray.At(i);
+        String name = subTextureVal.Get("name").GetString();
+
+        int x = subTextureVal.Get("x").GetInt();
+        int y = subTextureVal.Get("y").GetInt();
+        int width = subTextureVal.Get("width").GetInt();
+        int height = subTextureVal.Get("height").GetInt();
+        IntRect rectangle(x, y, x + width, y + height);
+
+        Vector2 hotSpot(0.5f, 0.5f);
+        IntVector2 offset(0, 0);
+        JSONValue frameWidthVal = subTextureVal.Get("frameWidth");
+        JSONValue frameHeightVal = subTextureVal.Get("frameHeight");
+
+        if (!frameWidthVal.IsNull() && !frameHeightVal.IsNull())
+        {
+            offset.x_ = subTextureVal.Get("frameX").GetInt();
+            offset.y_ = subTextureVal.Get("frameY").GetInt();
+            int frameWidth = frameWidthVal.GetInt();
+            int frameHeight = frameHeightVal.GetInt();
+            hotSpot.x_ = ((float)offset.x_ + frameWidth / 2) / width;
+            hotSpot.y_ = 1.0f - ((float)offset.y_ + frameHeight / 2) / height;
+        }
+
+        DefineSprite(name, rectangle, hotSpot, offset);
+
+    }
+
+    loadJSONFile_.Reset();
     loadTextureName_.Clear();
     return true;
 }

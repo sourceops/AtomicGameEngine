@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -28,6 +28,7 @@
 namespace Atomic
 {
 
+class Drawable2D; 
 class Renderer2D;
 class Texture2D;
 class VertexBuffer;
@@ -49,6 +50,10 @@ struct SourceBatch2D
     /// Construct.
     SourceBatch2D();
 
+    /// Owner.
+    WeakPtr<Drawable2D> owner_;
+    /// Distance to camera.
+    mutable float distance_;
     /// Draw order.
     int drawOrder_;
     /// Material.
@@ -57,13 +62,16 @@ struct SourceBatch2D
     Vector<Vertex2D> vertices_;
 };
 
+// ATOMIC BEGIN
+// Defined in header to be consistent with other constants
 /// Pixel size (equal 0.01f).
-extern ATOMIC_API const float PIXEL_SIZE;
+static const float PIXEL_SIZE = 0.01f;
+// ATOMIC END
 
 /// Base class for 2D visible components.
 class ATOMIC_API Drawable2D : public Drawable
 {
-    OBJECT(Drawable2D);
+    ATOMIC_OBJECT(Drawable2D, Drawable);
 
 public:
     /// Construct.
@@ -80,9 +88,10 @@ public:
     void SetLayer(int layer);
     /// Set order in layer.
     void SetOrderInLayer(int orderInLayer);
-    
+
     /// Return layer.
     int GetLayer() const { return layer_; }
+
     /// Return order in layer.
     int GetOrderInLayer() const { return orderInLayer_; }
 
@@ -90,17 +99,18 @@ public:
     const Vector<SourceBatch2D>& GetSourceBatches();
 
 protected:
-    /// Handle node being assigned.
-    virtual void OnNodeSet(Node* node);
+    /// Handle scene being assigned.
+    virtual void OnSceneSet(Scene* scene);
     /// Handle node transform being dirtied.
     virtual void OnMarkedDirty(Node* node);
     /// Handle draw order changed.
     virtual void OnDrawOrderChanged() = 0;
     /// Update source batches.
     virtual void UpdateSourceBatches() = 0;
+
     /// Return draw order by layer and order in layer.
     int GetDrawOrder() const { return (layer_ << 20) + (orderInLayer_ << 10); }
-  
+
     /// Layer.
     int layer_;
     /// Order in layer.

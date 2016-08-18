@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +20,10 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
-#include "../Atomic2D/ConstraintFriction2D.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
+#include "../Atomic2D/ConstraintFriction2D.h"
 #include "../Atomic2D/PhysicsUtils2D.h"
 #include "../Atomic2D/RigidBody2D.h"
 
@@ -30,6 +31,8 @@
 
 namespace Atomic
 {
+
+extern const char* ATOMIC2D_CATEGORY;
 
 ConstraintFriction2D::ConstraintFriction2D(Context* context) :
     Constraint2D(context),
@@ -44,13 +47,13 @@ ConstraintFriction2D::~ConstraintFriction2D()
 
 void ConstraintFriction2D::RegisterObject(Context* context)
 {
-    context->RegisterFactory<ConstraintFriction2D>();
-    
-    ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Anchor", GetAnchor, SetAnchor, Vector2, Vector2::ZERO, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Max Force", GetMaxForce, SetMaxForce, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Max Torque", GetMaxTorque, SetMaxTorque, float, 0.0f, AM_DEFAULT);
-    COPY_BASE_ATTRIBUTES(Constraint2D);
+    context->RegisterFactory<ConstraintFriction2D>(ATOMIC2D_CATEGORY);
+
+    ATOMIC_ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Anchor", GetAnchor, SetAnchor, Vector2, Vector2::ZERO, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Max Force", GetMaxForce, SetMaxForce, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Max Torque", GetMaxTorque, SetMaxTorque, float, 0.0f, AM_DEFAULT);
+    ATOMIC_COPY_BASE_ATTRIBUTES(Constraint2D);
 }
 
 void ConstraintFriction2D::SetAnchor(const Vector2& anchor)
@@ -97,7 +100,7 @@ b2JointDef* ConstraintFriction2D::GetJointDef()
     if (!bodyA || !bodyB)
         return 0;
 
-    jointDef_.Initialize(bodyA, bodyB, ToB2Vec2(anchor_));    
+    jointDef_.Initialize(bodyA, bodyB, ToB2Vec2(anchor_));
 
     return &jointDef_;
 }

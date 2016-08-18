@@ -1,13 +1,34 @@
-
-//--player --editor-resource-paths "/Users/josh/Dev/atomic/AtomicGameEngine/Data/AtomicPlayer/Resources/CoreData!/Users/josh/Dev/atomic/AtomicGameEngine/Data/AtomicPlayer/Resources/PlayerData!/Users/josh/Dev/atomic/AtomicExamples/UIExample/Resources"
+//
+// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include "../IO/Log.h"
+#include "../Input/InputEvents.h"
 
 #include "UIEvents.h"
 #include "UI.h"
 #include "UIWidget.h"
 #include "UILayout.h"
 #include "UIFontDescription.h"
+#include "UIView.h"
 
 using namespace tb;
 
@@ -15,16 +36,16 @@ namespace Atomic
 {
 
 UIWidget::UIWidget(Context* context, bool createWidget) : Object(context),
-    widget_(0)
-{    
-    AddRef();
-
+    widget_(0),
+    preferredSize_(new UIPreferredSize()),
+    multiTouch_(false)
+{
     if (createWidget)
     {
         widget_ = new TBWidget();
         widget_->SetDelegate(this);
         GetSubsystem<UI>()->WrapWidget(this, widget_);
-    }
+    }    
 
 }
 
@@ -55,6 +76,17 @@ bool UIWidget::Load(const String& filename)
     return true;
 }
 
+UIPreferredSize* UIWidget::GetPreferredSize()
+{
+    // error
+    if (!widget_)
+        return preferredSize_;
+
+    preferredSize_->SetFromTBPreferredSize(widget_->GetPreferredSize());
+
+    return preferredSize_;
+}
+
 UIWidget* UIWidget::GetWidget(const String& id)
 {
     if (!widget_)
@@ -75,12 +107,68 @@ void UIWidget::SetWidget(tb::TBWidget* widget)
     widget_->SetDelegate(this);
 }
 
+/*
+enum SPECIAL_KEY
+{
+    TB_KEY_UNDEFINED = 0,
+    TB_KEY_UP, TB_KEY_DOWN, TB_KEY_LEFT, TB_KEY_RIGHT,
+    TB_KEY_PAGE_UP, TB_KEY_PAGE_DOWN, TB_KEY_HOME, TB_KEY_END,
+    TB_KEY_TAB, TB_KEY_BACKSPACE, TB_KEY_INSERT, TB_KEY_DELETE,
+    TB_KEY_ENTER, TB_KEY_ESC,
+    TB_KEY_F1, TB_KEY_F2, TB_KEY_F3, TB_KEY_F4, TB_KEY_F5, TB_KEY_F6,
+    TB_KEY_F7, TB_KEY_F8, TB_KEY_F9, TB_KEY_F10, TB_KEY_F11, TB_KEY_F12
+};
+*/
+
+
 void UIWidget::ConvertEvent(UIWidget *handler, UIWidget* target, const tb::TBWidgetEvent &ev, VariantMap& data)
 {
     UI* ui = GetSubsystem<UI>();
-    String id;
 
-    ui->GetTBIDString(ev.ref_id, id);
+    String refid;
+
+    ui->GetTBIDString(ev.ref_id, refid);
+
+    int key = ev.key;
+
+    if (ev.special_key)
+    {
+        switch (ev.special_key)
+        {
+        case TB_KEY_ENTER:
+            key = KEY_RETURN;
+            break;
+        case TB_KEY_BACKSPACE:
+            key = KEY_BACKSPACE;
+            break;
+        case TB_KEY_DELETE:
+            key = KEY_DELETE;
+            break;
+        case TB_KEY_DOWN:
+            key = KEY_DOWN;
+            break;
+        case TB_KEY_UP:
+            key = KEY_UP;
+            break;
+        case TB_KEY_LEFT:
+            key = KEY_LEFT;
+            break;
+        case TB_KEY_RIGHT:
+            key = KEY_RIGHT;
+            break;
+        default:
+            break;
+        }
+    }
+
+    unsigned modifierKeys = 0;
+
+    if( ev.special_key && TB_SHIFT)
+        modifierKeys |= QUAL_SHIFT;
+    if( ev.special_key && TB_CTRL)
+        modifierKeys |= QUAL_CTRL;
+    if( ev.special_key && TB_ALT)
+        modifierKeys |= QUAL_ALT;
 
     using namespace WidgetEvent;
     data[P_HANDLER] = handler;
@@ -91,38 +179,83 @@ void UIWidget::ConvertEvent(UIWidget *handler, UIWidget* target, const tb::TBWid
     data[P_DELTAX] = ev.delta_x;
     data[P_DELTAY] = ev.delta_y;
     data[P_COUNT] = ev.count;
-    data[P_KEY] = ev.key;
+    data[P_KEY] = key;
+
     data[P_SPECIALKEY] = (unsigned) ev.special_key;
-    data[P_MODIFIERKEYS] = (unsigned) ev.modifierkeys;
-    data[P_REFID] = id;
+    data[P_MODIFIERKEYS] = modifierKeys;
+    data[P_REFID] = refid;
     data[P_TOUCH] = (unsigned) ev.touch;
 }
 
 void UIWidget::OnDelete()
 {
-    if (widget_)
-    {
-        // if we don't have a UI subsystem, we are exiting
-        UI* ui = GetSubsystem<UI>();
-        if (ui)
-            ui->UnwrapWidget(widget_);
-    }
-
-    widget_ = 0;
-
     VariantMap eventData;
     eventData[WidgetDeleted::P_WIDGET] = this;
     SendEvent(E_WIDGETDELETED, eventData);
 
-    ReleaseRef();
+    UnsubscribeFromAllEvents();   
+
+    if (widget_)
+    {
+        // if we don't have a UI subsystem, we are exiting
+        UI* ui = GetSubsystem<UI>();
+
+        if (ui)
+        { 
+            if (ui->UnwrapWidget(widget_))
+            {
+                widget_ = 0;
+                ReleaseRef();
+                return;
+            }
+        }
+    }
+
+    widget_ = 0;
+
+}
+
+void UIWidget::AddChildAfter(UIWidget* child, UIWidget* otherChild)
+{
+    if (!widget_ || !child || !child->widget_ || !otherChild || !otherChild->widget_)
+        return;
+
+    widget_->AddChildRelative(child->widget_, tb::WIDGET_Z_REL_AFTER, otherChild->widget_);
+
+}
+
+void UIWidget::AddChildBefore(UIWidget* child, UIWidget* otherChild)
+{
+    if (!widget_ || !child || !child->widget_ || !otherChild || !otherChild->widget_)
+        return;
+
+    widget_->AddChildRelative(child->widget_, tb::WIDGET_Z_REL_BEFORE, otherChild->widget_);
+
 }
 
 void UIWidget::AddChild(UIWidget* child)
 {
-    if (!widget_ || !child->widget_)
+    if (!widget_ || !child || !child->widget_)
         return;
 
     widget_->AddChild(child->widget_);
+}
+
+void UIWidget::AddChildRelative(UIWidget* child, UI_WIDGET_Z_REL z, UIWidget* reference)
+{
+    if (!widget_ || !child || !child->widget_ || !reference || !reference->widget_)
+        return;
+
+    widget_->AddChildRelative(child->widget_, (WIDGET_Z_REL) z, reference->widget_);
+
+}
+
+String UIWidget::GetText()
+{
+    if (!widget_)
+        return String::EMPTY;
+
+    return widget_->GetText().CStr();
 }
 
 void UIWidget::SetText(const String& text)
@@ -133,12 +266,29 @@ void UIWidget::SetText(const String& text)
     widget_->SetText(text.CString());
 }
 
-void UIWidget::SetGravity(/*WIDGET_GRAVITY*/ unsigned gravity)
+void UIWidget::SetGravity(UI_GRAVITY gravity)
 {
     if (!widget_)
         return;
 
     widget_->SetGravity((WIDGET_GRAVITY) gravity);
+
+}
+
+void UIWidget::SetAxis(UI_AXIS axis)
+{
+    if (!widget_)
+        return;
+
+    widget_->SetAxis((AXIS) axis);
+}
+
+bool UIWidget::IsAncestorOf(UIWidget* widget)
+{
+    if (!widget_ || !widget || !widget->widget_)
+        return false;
+
+    return widget_->IsAncestorOf(widget->widget_);
 
 }
 
@@ -206,10 +356,14 @@ void UIWidget::Center()
     if (!widget_)
         return;
 
-    // this should center on parent widget, not root
-    UI* ui = GetSubsystem<UI>();
     TBRect rect = widget_->GetRect();
-    TBWidget* root = ui->GetRootWidget();
+    TBWidget* root = widget_->GetParent();
+    if (!root)
+    {
+        UI* ui = GetSubsystem<UI>();
+        root = ui->GetRootWidget();
+    }
+
     TBRect bounds(0, 0, root->GetRect().w, root->GetRect().h);
     widget_->SetRect(rect.CenterIn(bounds).MoveIn(bounds).Clip(bounds));
 
@@ -278,6 +432,317 @@ void UIWidget::SetFontDescription(UIFontDescription* fd)
 
 }
 
+void UIWidget::SetFontId(const String& fontId)
+{
+    if (!widget_)
+        return;
+
+    tb::TBFontDescription fd(widget_->GetFontDescription());
+    fd.SetID(fontId.CString());
+    widget_->SetFontDescription(fd);
+}
+
+String UIWidget::GetFontId()
+{
+    if (!widget_)
+        return "";
+
+    tb::TBFontDescription fd(widget_->GetFontDescription());
+    if (!g_font_manager->HasFontFace(fd))
+    {
+        return "";
+    }
+    return g_font_manager->GetFontInfo(fd.GetID())->GetName();
+}
+
+void UIWidget::SetFontSize(int size)
+{
+    if (!widget_)
+        return;
+
+    tb::TBFontDescription fd(widget_->GetFontDescription());
+    fd.SetSize(size);
+    widget_->SetFontDescription(fd);
+}
+
+int UIWidget::GetFontSize()
+{
+    if (!widget_)
+        return 0;
+
+    tb::TBFontDescription fd(widget_->GetFontDescription());
+    return fd.GetSize();
+}
+
+void UIWidget::SetLayoutWidth(int width)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.SetWidth(width);
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutWidth()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->pref_w;
+}
+
+void UIWidget::SetLayoutHeight(int height)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.SetHeight(height);
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutHeight()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->pref_h;
+}
+
+void UIWidget::SetLayoutPrefWidth(int width)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.pref_w = width;
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutPrefWidth()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->pref_w;
+}
+
+void UIWidget::SetLayoutPrefHeight(int height)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.pref_h = height;
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutPrefHeight()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->pref_h;
+}
+
+void UIWidget::SetLayoutMinWidth(int width)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.min_w = width;
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutMinWidth()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->min_w;
+}
+
+void UIWidget::SetLayoutMinHeight(int height)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.min_h = height;
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutMinHeight()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->min_h;
+}
+
+void UIWidget::SetLayoutMaxWidth(int width)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.max_w = width;
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutMaxWidth()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->max_w;
+}
+
+void UIWidget::SetLayoutMaxHeight(int height)
+{
+    if (!widget_)
+        return;
+
+    tb::LayoutParams lp;
+
+    const tb::LayoutParams *oldLp(widget_->GetLayoutParams());
+    if (oldLp)
+        lp = *oldLp;
+
+    lp.max_h = height;
+    widget_->SetLayoutParams(lp);
+}
+
+int UIWidget::GetLayoutMaxHeight()
+{
+    if (!widget_)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    const tb::LayoutParams *lp(widget_->GetLayoutParams());
+    if (!lp)
+        return tb::LayoutParams::UNSPECIFIED;
+
+    return lp->max_h;
+}
+
+void UIWidget::SetOpacity(float opacity)
+{
+    if (!widget_)
+        return;
+
+    widget_->SetOpacity(opacity);
+}
+
+float UIWidget::GetOpacity()
+{
+    if (!widget_)
+        return -0.0f;
+
+    return widget_->GetOpacity();
+}
+
+void UIWidget::SetAutoOpacity(float autoOpacity)
+{
+    if (!widget_)
+        return;
+
+    if (autoOpacity == 0.0f)
+    {
+        widget_->SetOpacity(autoOpacity);
+        widget_->SetVisibilility(tb::WIDGET_VISIBILITY_INVISIBLE);
+    }
+    else
+    {
+        widget_->SetVisibilility(tb::WIDGET_VISIBILITY_VISIBLE);
+        widget_->SetOpacity(autoOpacity);
+    }
+}
+
+float UIWidget::GetAutoOpacity()
+{
+    if (!widget_)
+        return -0.0f;
+
+    float autoOpacity(widget_->GetOpacity());
+
+    if (autoOpacity == 0.0f)
+    {
+        if (widget_->GetVisibility() == tb::WIDGET_VISIBILITY_VISIBLE)
+            return 0.0001f; // Don't say that it's completly invisible.
+    }
+    else
+    {
+        if (widget_->GetVisibility() != tb::WIDGET_VISIBILITY_VISIBLE)
+            return 0.0f; // Say it's invisible.
+    }
+    return autoOpacity;
+}
+
 void UIWidget::DeleteAllChildren()
 {
     if (!widget_)
@@ -292,6 +757,15 @@ void UIWidget::SetSkinBg(const String& id)
         return;
 
     widget_->SetSkinBg(TBIDC(id.CString()));
+
+}
+
+void UIWidget::Remove()
+{
+    if (!widget_ || !widget_->GetParent())
+        return;
+
+    widget_->GetParent()->RemoveChild(widget_);
 
 }
 
@@ -347,7 +821,7 @@ void UIWidget::SetId(const String& id)
 
 }
 
-void UIWidget::SetState(/*WIDGET_STATE*/ unsigned state, bool on)
+void UIWidget::SetState(UI_WIDGET_STATE state, bool on)
 {
     if (!widget_)
         return;
@@ -361,9 +835,26 @@ void UIWidget::SetFocus()
         return;
 
     widget_->SetFocus(WIDGET_FOCUS_REASON_UNKNOWN);
+
 }
 
-void UIWidget::SetVisibility(/*WIDGET_VISIBILITY*/ unsigned visibility)
+bool UIWidget::GetFocus()
+{
+    if (!widget_)
+        return false;
+
+    return widget_->GetIsFocused();
+}
+
+void UIWidget::SetFocusRecursive()
+{
+    if (!widget_)
+        return;
+
+    widget_->SetFocusRecursive(WIDGET_FOCUS_REASON_UNKNOWN);
+}
+
+void UIWidget::SetVisibility(UI_WIDGET_VISIBILITY visibility)
 {
 
     if (!widget_)
@@ -371,6 +862,14 @@ void UIWidget::SetVisibility(/*WIDGET_VISIBILITY*/ unsigned visibility)
 
     widget_->SetVisibilility((WIDGET_VISIBILITY) visibility);
 
+}
+
+UI_WIDGET_VISIBILITY UIWidget::GetVisibility()
+{
+    if (!widget_)
+        return UI_WIDGET_VISIBILITY_GONE;
+
+    return (UI_WIDGET_VISIBILITY) widget_->GetVisibility();
 }
 
 UIWidget* UIWidget::GetFirstChild()
@@ -408,8 +907,26 @@ double UIWidget::GetValue()
 
 }
 
+void UIWidget::Enable()
+{
+    if (!widget_)
+        return;
 
-bool UIWidget::GetState(/*WIDGET_STATE*/ unsigned state)
+    widget_->SetState(WIDGET_STATE_DISABLED, false);
+
+}
+
+void UIWidget::Disable()
+{
+
+    if (!widget_)
+        return;
+
+    widget_->SetState(WIDGET_STATE_DISABLED, true);
+
+}
+
+bool UIWidget::GetState(UI_WIDGET_STATE state)
 {
     if (!widget_)
         return false;
@@ -418,7 +935,7 @@ bool UIWidget::GetState(/*WIDGET_STATE*/ unsigned state)
 
 }
 
-void UIWidget::SetStateRaw(/*WIDGET_STATE*/ unsigned state)
+void UIWidget::SetStateRaw(UI_WIDGET_STATE state)
 {
     if (!widget_)
         return;
@@ -427,22 +944,98 @@ void UIWidget::SetStateRaw(/*WIDGET_STATE*/ unsigned state)
 
 }
 
-/*WIDGET_STATE*/ unsigned UIWidget::GetStateRaw()
+UI_WIDGET_STATE UIWidget::GetStateRaw()
 {
     if (!widget_)
-        return false;
+        return UI_WIDGET_STATE_NONE;
 
-    return (unsigned) widget_->GetStateRaw();
+    return (UI_WIDGET_STATE) widget_->GetStateRaw();
 
 }
 
+UIView* UIWidget::GetView()
+{
+    if (!widget_)
+        return 0;
 
+    if (GetType() == UIView::GetTypeStatic())
+        return (UIView*) this;
+
+    TBWidget* tbw = widget_->GetParent();
+    while(tbw)
+    {
+        TBWidgetDelegate* delegate = tbw->GetDelegate();
+        if (delegate)
+        {
+            UIWidget* d = (UIWidget*) delegate;
+            if (d->GetType() == UIView::GetTypeStatic())
+                return (UIView*) d;
+        }
+
+        tbw = tbw->GetParent();
+    }
+
+    return 0;
+}
+
+void UIWidget::OnFocusChanged(bool focused)
+{
+    using namespace WidgetFocusChanged;
+
+    VariantMap eventData;
+    eventData[P_WIDGET] = this;
+    eventData[P_FOCUSED] = focused;
+    SendEvent(E_WIDGETFOCUSCHANGED, eventData);
+
+}
 
 bool UIWidget::OnEvent(const tb::TBWidgetEvent &ev)
 {
     UI* ui = GetSubsystem<UI>();
 
-    if (ev.type == EVENT_TYPE_CHANGED)
+    if ((ev.type == EVENT_TYPE_CHANGED && !ui->GetBlockChangedEvents()) || ev.type == EVENT_TYPE_KEY_UP)
+    {
+        if (!ev.target || ui->IsWidgetWrapped(ev.target))
+        {
+            VariantMap eventData;
+            ConvertEvent(this, ui->WrapWidget(ev.target), ev, eventData);
+            SendEvent(E_WIDGETEVENT, eventData);
+
+            if (eventData[WidgetEvent::P_HANDLED].GetBool())
+                return true;
+
+        }
+
+    }
+    else if (ev.type == EVENT_TYPE_RIGHT_POINTER_UP)
+    {
+        if (!ev.target || ui->IsWidgetWrapped(ev.target))
+        {
+            VariantMap eventData;
+            ConvertEvent(this, ui->WrapWidget(ev.target), ev, eventData);
+            SendEvent(E_WIDGETEVENT, eventData);
+
+            if (eventData[WidgetEvent::P_HANDLED].GetBool())
+                return true;
+
+        }
+
+    }
+    else if (ev.type == EVENT_TYPE_POINTER_DOWN)
+    {
+        if (!ev.target || ui->IsWidgetWrapped(ev.target))
+        {
+            VariantMap eventData;
+            ConvertEvent(this, ui->WrapWidget(ev.target), ev, eventData);
+            SendEvent(E_WIDGETEVENT, eventData);
+
+            if (eventData[WidgetEvent::P_HANDLED].GetBool())
+                return true;
+
+        }
+
+    }
+    else if (ev.type == EVENT_TYPE_SHORTCUT)
     {
         if (!ev.target || ui->IsWidgetWrapped(ev.target))
         {
@@ -503,8 +1096,97 @@ bool UIWidget::OnEvent(const tb::TBWidgetEvent &ev)
         }
 
     }
+    if (ev.type == EVENT_TYPE_CUSTOM)
+    {
+        if (!ev.target || ui->IsWidgetWrapped(ev.target))
+        {
+            VariantMap eventData;
+            ConvertEvent(this, ui->WrapWidget(ev.target), ev, eventData);
+            SendEvent(E_WIDGETEVENT, eventData);
+
+            if (eventData[WidgetEvent::P_HANDLED].GetBool())
+                return true;
+
+        }
+
+    }
+
 
     return false;
 }
+
+bool UIWidget::GetCaptured()
+{
+    if (!widget_)
+        return false;
+
+    return widget_->IsCaptured();
+
+}
+
+void UIWidget::SetCapturing(bool capturing)
+{
+    if (!widget_)
+        return;
+
+    widget_->SetCapturing(capturing);
+}
+
+bool UIWidget::GetCapturing()
+{
+    if (!widget_)
+        return false;
+
+    return widget_->GetCapturing();
+}
+
+void UIWidget::InvalidateLayout()
+{
+    if (!widget_)
+        return;
+
+    widget_->InvalidateLayout(tb::TBWidget::INVALIDATE_LAYOUT_TARGET_ONLY);
+
+}
+
+void UIWidget::InvokeShortcut(const String& shortcut)
+{
+    TBWidgetEvent ev(EVENT_TYPE_SHORTCUT);
+    ev.ref_id = TBIDC(shortcut.CString());
+    widget_->OnEvent(ev);
+}
+
+bool UIWidget::GetShortened()
+{
+    if (!widget_)
+        return false;
+
+    return widget_->GetShortened();
+}
+
+void UIWidget::SetShortened(bool shortened)
+{
+    if (!widget_)
+        return;
+
+    widget_->SetShortened(shortened);
+}
+
+String UIWidget::GetTooltip()
+{
+    if (!widget_)
+        return String::EMPTY;
+
+    return widget_->GetTooltip().CStr();
+}
+
+void UIWidget::SetTooltip(const String& tooltip)
+{
+    if (!widget_)
+        return;
+
+    widget_->SetTooltip(tooltip.CString());
+}
+
 
 }

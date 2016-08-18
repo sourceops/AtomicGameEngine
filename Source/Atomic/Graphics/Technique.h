@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -41,14 +41,18 @@ enum PassLightingMode
 /// %Material rendering pass, which defines shaders and render state.
 class ATOMIC_API Pass : public RefCounted
 {
+    ATOMIC_REFCOUNTED(Pass)
+
 public:
     /// Construct.
     Pass(const String& passName);
     /// Destruct.
     ~Pass();
-    
+
     /// Set blend mode.
     void SetBlendMode(BlendMode mode);
+    /// Set culling mode override. By default culling mode is read from the material instead. Set the illegal culling mode MAX_CULLMODES to disable override again.
+    void SetCullMode(CullMode mode);
     /// Set depth compare mode.
     void SetDepthTestMode(CompareMode mode);
     /// Set pass lighting mode, affects what shader variations will be attempted to be loaded.
@@ -71,43 +75,62 @@ public:
     void ReleaseShaders();
     /// Mark shaders loaded this frame.
     void MarkShadersLoaded(unsigned frameNumber);
-    
+
     /// Return pass name.
     const String& GetName() const { return name_; }
+
     /// Return pass index. This is used for optimal render-time pass queries that avoid map lookups.
     unsigned GetIndex() const { return index_; }
+
     /// Return blend mode.
     BlendMode GetBlendMode() const { return blendMode_; }
+
+    /// Return culling mode override. If pass is not overriding culling mode (default), the illegal mode MAX_CULLMODES is returned.
+    CullMode GetCullMode() const { return cullMode_; }
+
     /// Return depth compare mode.
     CompareMode GetDepthTestMode() const { return depthTestMode_; }
+
     /// Return pass lighting mode.
     PassLightingMode GetLightingMode() const { return lightingMode_; }
+
     /// Return last shaders loaded frame number.
     unsigned GetShadersLoadedFrameNumber() const { return shadersLoadedFrameNumber_; }
+
     /// Return depth write mode.
     bool GetDepthWrite() const { return depthWrite_; }
+
     /// Return alpha masking hint.
     bool GetAlphaMask() const { return alphaMask_; }
+
     /// Return whether requires desktop level hardware.
     bool IsDesktop() const { return isDesktop_; }
+
     /// Return vertex shader name.
     const String& GetVertexShader() const { return vertexShaderName_; }
+
     /// Return pixel shader name.
     const String& GetPixelShader() const { return pixelShaderName_; }
+
     /// Return vertex shader defines.
     const String& GetVertexShaderDefines() const { return vertexShaderDefines_; }
+
     /// Return pixel shader defines.
     const String& GetPixelShaderDefines() const { return pixelShaderDefines_; }
+
     /// Return vertex shaders.
     Vector<SharedPtr<ShaderVariation> >& GetVertexShaders() { return vertexShaders_; }
+
     /// Return pixel shaders.
     Vector<SharedPtr<ShaderVariation> >& GetPixelShaders() { return pixelShaders_; }
-    
+
 private:
     /// Pass index.
     unsigned index_;
     /// Blend mode.
     BlendMode blendMode_;
+    /// Culling mode.
+    CullMode cullMode_;
     /// Depth compare mode.
     CompareMode depthTestMode_;
     /// Lighting mode.
@@ -118,8 +141,6 @@ private:
     bool depthWrite_;
     /// Alpha masking hint.
     bool alphaMask_;
-    /// Require %Shader %Model 3 flag.
-    bool isSM3_;
     /// Require desktop level hardware flag.
     bool isDesktop_;
     /// Vertex shader name.
@@ -141,10 +162,10 @@ private:
 /// %Material technique. Consists of several passes.
 class ATOMIC_API Technique : public Resource
 {
-    OBJECT(Technique);
-    
+    ATOMIC_OBJECT(Technique, Resource);
+
     friend class Renderer;
-    
+
 public:
     /// Construct.
     Technique(Context* context);
@@ -152,10 +173,10 @@ public:
     ~Technique();
     /// Register object factory.
     static void RegisterObject(Context* context);
-    
+
     /// Load resource from stream. May be called from a worker thread. Return true if successful.
     virtual bool BeginLoad(Deserializer& source);
-    
+
     /// Set whether requires desktop level hardware.
     void SetIsDesktop(bool enable);
     /// Create a new pass.
@@ -164,20 +185,27 @@ public:
     void RemovePass(const String& passName);
     /// Reset shader pointers in all passes.
     void ReleaseShaders();
-    
+    /// Clone the technique. Passes will be deep copied to allow independent modification.
+    SharedPtr<Technique> Clone(const String& cloneName = String::EMPTY) const;
+
     /// Return whether requires desktop level hardware.
     bool IsDesktop() const { return isDesktop_; }
+
     /// Return whether technique is supported by the current hardware.
     bool IsSupported() const { return !isDesktop_ || desktopSupport_; }
+
     /// Return whether has a pass.
     bool HasPass(unsigned passIndex) const { return passIndex < passes_.Size() && passes_[passIndex].Get() != 0; }
+
     /// Return whether has a pass by name. This overload should not be called in time-critical rendering loops; use a pre-acquired pass index instead.
     bool HasPass(const String& passName) const;
+
     /// Return a pass, or null if not found.
     Pass* GetPass(unsigned passIndex) const { return passIndex < passes_.Size() ? passes_[passIndex].Get() : 0; }
+
     /// Return a pass by name, or null if not found. This overload should not be called in time-critical rendering loops; use a pre-acquired pass index instead.
     Pass* GetPass(const String& passName) const;
-    
+
     /// Return a pass that is supported for rendering, or null if not found.
     Pass* GetSupportedPass(unsigned passIndex) const
     {
@@ -187,7 +215,7 @@ public:
 
     /// Return a supported pass by name. This overload should not be called in time-critical rendering loops; use a pre-acquired pass index instead.
     Pass* GetSupportedPass(const String& passName) const;
-    
+
     /// Return number of passes.
     unsigned GetNumPasses() const;
     /// Return all pass names.

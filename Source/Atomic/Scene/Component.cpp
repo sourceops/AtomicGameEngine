@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,14 +20,26 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
-#include "../Scene/Component.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
+#include "../Resource/JSONValue.h"
+#include "../Scene/Component.h"
 #include "../Scene/ReplicationState.h"
 #include "../Scene/Scene.h"
 #include "../Scene/SceneEvents.h"
+#ifdef ATOMIC_PHYSICS
+#include "../Physics/PhysicsWorld.h"
+#endif
+#ifdef ATOMIC_ATOMIC2D
+#include "../Atomic2D/PhysicsWorld2D.h"
+#endif
 
 #include "../DebugNew.h"
+
+#ifdef _MSC_VER
+#pragma warning(disable:6293)
+#endif
 
 namespace Atomic
 {
@@ -62,11 +74,21 @@ bool Component::SaveXML(XMLElement& dest) const
     // Write type and ID
     if (!dest.SetString("type", GetTypeName()))
         return false;
-    if (!dest.SetInt("id", id_))
+    if (!dest.SetUInt("id", id_))
         return false;
 
     // Write attributes
     return Animatable::SaveXML(dest);
+}
+
+bool Component::SaveJSON(JSONValue& dest) const
+{
+    // Write type and ID
+    dest.Set("type", GetTypeName());
+    dest.Set("id", id_);
+
+    // Write attributes
+    return Animatable::SaveJSON(dest);
 }
 
 void Component::MarkNetworkUpdate()
@@ -169,8 +191,8 @@ void Component::PrepareNetworkUpdate()
             networkState_->previousValues_[i] = networkState_->currentValues_[i];
 
             // Mark the attribute dirty in all replication states that are tracking this component
-            for (PODVector<ReplicationState*>::Iterator j = networkState_->replicationStates_.Begin(); j !=
-                networkState_->replicationStates_.End(); ++j)
+            for (PODVector<ReplicationState*>::Iterator j = networkState_->replicationStates_.Begin();
+                 j != networkState_->replicationStates_.End(); ++j)
             {
                 ComponentReplicationState* compState = static_cast<ComponentReplicationState*>(*j);
                 compState->dirtyAttributes_.Set(i);
@@ -204,7 +226,7 @@ void Component::CleanupConnection(Connection* connection)
 void Component::OnAttributeAnimationAdded()
 {
     if (attributeAnimationInfos_.Size() == 1)
-        SubscribeToEvent(GetScene(), E_ATTRIBUTEANIMATIONUPDATE, HANDLER(Component, HandleAttributeAnimationUpdate));
+        SubscribeToEvent(GetScene(), E_ATTRIBUTEANIMATIONUPDATE, ATOMIC_HANDLER(Component, HandleAttributeAnimationUpdate));
 }
 
 void Component::OnAttributeAnimationRemoved()
@@ -214,6 +236,10 @@ void Component::OnAttributeAnimationRemoved()
 }
 
 void Component::OnNodeSet(Node* node)
+{
+}
+
+void Component::OnSceneSet(Scene* scene)
 {
 }
 
@@ -260,4 +286,24 @@ void Component::HandleAttributeAnimationUpdate(StringHash eventType, VariantMap&
 
     UpdateAttributeAnimations(eventData[P_TIMESTEP].GetFloat());
 }
+
+Component* Component::GetFixedUpdateSource()
+{
+    Component* ret = 0;
+    Scene* scene = GetScene();
+
+    if (scene)
+    {
+#ifdef ATOMIC_PHYSICS
+        ret = scene->GetComponent<PhysicsWorld>();
+#endif
+#ifdef ATOMIC_ATOMIC2D
+        if (!ret)
+            ret = scene->GetComponent<PhysicsWorld2D>();
+#endif
+    }
+
+    return ret;
+}
+
 }

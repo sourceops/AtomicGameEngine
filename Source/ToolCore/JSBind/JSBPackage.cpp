@@ -1,3 +1,25 @@
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+
 #include <Atomic/IO/Log.h>
 #include <Atomic/IO/File.h>
 #include <Atomic/IO/FileSystem.h>
@@ -6,10 +28,7 @@
 #include "JSBind.h"
 #include "JSBModule.h"
 #include "JSBPackage.h"
-
 #include "JSBPackageWriter.h"
-#include "JSBDoc.h"
-#include "JSBTypeScript.h"
 
 namespace ToolCore
 {
@@ -18,7 +37,9 @@ Vector<SharedPtr<JSBPackage> > JSBPackage::allPackages_;
 
 JSBPackage::JSBPackage(Context* context) : Object(context)
 {
-
+    // by default we bind for both JavaScript and C#
+    bindingTypes_.Push(JAVASCRIPT);
+    bindingTypes_.Push(CSHARP);
 }
 
 JSBPackage::~JSBPackage()
@@ -58,30 +79,10 @@ void JSBPackage::ProcessModules()
 
 }
 
-void JSBPackage::GenerateSource(const String &outPath)
+void JSBPackage::GenerateSource(JSBPackageWriter& packageWriter)
 {
-    JSBPackageWriter writer(this);
-    writer.GenerateSource(source_);
-
-    String filepath = outPath + "/JSPackage" + name_ + ".cpp";
-
-    File file(context_);
-    file.Open(filepath, FILE_WRITE);
-    file.Write(source_.CString(), source_.Length());
-    file.Close();
-
-    for (unsigned i = 0; i < modules_.Size(); i++)
-    {
-        modules_[i]->GenerateSource(outPath);
-    }
-
-    JSBind* jsbind = GetSubsystem<JSBind>();
-
-    JSBDoc jdoc;
-    jdoc.Emit(this, jsbind->GetSourceRootFolder() + "Bin/" + name_ + ".js");
-
-    JSBTypeScript ts;
-    ts.Emit(this, jsbind->GetSourceRootFolder() + "Bin/" + name_ + ".d.ts");
+    packageWriter.GenerateSource();
+    packageWriter.PostProcess();
 }
 
 JSBClass* JSBPackage::GetClass(const String& name)
@@ -157,7 +158,7 @@ bool JSBPackage::ContainsConstantAllPackages(const String& constantName)
 
 bool JSBPackage::Load(const String& packageFolder)
 {
-    LOGINFOF("Loading Package: %s", packageFolder.CString());
+    ATOMIC_LOGINFOF("Loading Package: %s", packageFolder.CString());
 
     JSBind* jsbind = GetSubsystem<JSBind>();
 
@@ -165,7 +166,7 @@ bool JSBPackage::Load(const String& packageFolder)
 
     if (!jsonFile->IsOpen())
     {
-        LOGERRORF("Unable to open package json: %s", (packageFolder + "Package.json").CString());
+        ATOMIC_LOGERRORF("Unable to open package json: %s", (packageFolder + "Package.json").CString());
         return false;
     }
 
@@ -173,26 +174,26 @@ bool JSBPackage::Load(const String& packageFolder)
 
     if (!packageJSON->BeginLoad(*jsonFile))
     {
-        LOGERRORF("Unable to parse package json: %s", (packageFolder + "Package.json").CString());
+        ATOMIC_LOGERRORF("Unable to parse package json: %s", (packageFolder + "Package.json").CString());
         return false;
     }
 
     JSONValue root = packageJSON->GetRoot();
 
     // first load dependencies
-    JSONValue deps = root.GetChild("dependencies");
+    JSONValue deps = root.Get("dependencies");
 
     if (deps.IsArray())
     {
-        for (unsigned i = 0; i < deps.GetSize(); i++)
+        for (unsigned i = 0; i < deps.GetArray().Size(); i++)
         {
-            String dpackageFolder = AddTrailingSlash(deps.GetString(i));
+            String dpackageFolder = AddTrailingSlash(deps.GetArray()[i].GetString());
 
             SharedPtr<JSBPackage> depPackage (new JSBPackage(context_));
 
             if (!depPackage->Load(jsbind->GetSourceRootFolder() + dpackageFolder))
             {
-                LOGERRORF("Unable to load package dependency: %s", dpackageFolder.CString());
+                ATOMIC_LOGERRORF("Unable to load package dependency: %s", dpackageFolder.CString());
                 return false;
             }
 
@@ -200,11 +201,11 @@ bool JSBPackage::Load(const String& packageFolder)
 
     }
 
-    JSONValue jmodulesExclude = root.GetChild("moduleExclude");
+    JSONValue jmodulesExclude = root.Get("moduleExclude");
 
     if (jmodulesExclude.IsObject())
     {
-        Vector<String> platforms = jmodulesExclude.GetChildNames();
+        Vector<String> platforms = jmodulesExclude.GetObject().Keys();
 
         for (unsigned i = 0; i < platforms.Size(); i++)
         {
@@ -215,14 +216,14 @@ bool JSBPackage::Load(const String& packageFolder)
                 moduleExcludes_[platform] = Vector<String>();
             }
 
-            JSONValue mods = jmodulesExclude.GetChild(platform);
+            JSONValue mods = jmodulesExclude.Get(platform);
 
             if (mods.IsArray())
             {
 
-                for (unsigned j = 0; j < mods.GetSize(); j++)
+                for (unsigned j = 0; j < mods.GetArray().Size(); j++)
                 {
-                    moduleExcludes_[platform].Push(mods.GetString(j));
+                    moduleExcludes_[platform].Push(mods.GetArray()[j].GetString());
                 }
 
             }
@@ -231,14 +232,26 @@ bool JSBPackage::Load(const String& packageFolder)
 
     }
 
-    name_ = root.GetString("name");
-    namespace_ = root.GetString("namespace");
-
-    JSONValue modules = root.GetChild("modules");
-
-    for (unsigned i = 0; i < modules.GetSize(); i++)
+    JSONValue dnmodules = root.Get("dotnetModules");
+    Vector<String> dotNetModules;
+    if (dnmodules.IsArray())
     {
-        String moduleName = modules.GetString(i);
+        for (unsigned i = 0; i < dnmodules.GetArray().Size(); i++)
+        {
+            String moduleName = dnmodules.GetArray()[i].GetString();
+            dotNetModules.Push(moduleName);
+        }
+    }
+
+
+    name_ = root.Get("name").GetString();
+    namespace_ = root.Get("namespace").GetString();
+
+    JSONValue modules = root.Get("modules");
+
+    for (unsigned i = 0; i < modules.GetArray().Size(); i++)
+    {
+        String moduleName = modules.GetArray()[i].GetString();
 
         if (moduleExcludes_.Contains(jsbind->GetPlatform()))
         {
@@ -250,12 +263,39 @@ bool JSBPackage::Load(const String& packageFolder)
 
         if (!module->Load(packageFolder + moduleName + ".json"))
         {
-            LOGERRORF("Unable to load module json: %s", (packageFolder + moduleName + ".json").CString());
+            ATOMIC_LOGERRORF("Unable to load module json: %s", (packageFolder + moduleName + ".json").CString());
             return false;
+        }
+
+        if (dotNetModules.Contains(moduleName))
+        {
+            module->SetDotNetModule(true);
         }
 
         modules_.Push(module);
 
+    }
+
+    // bindings to generate
+    JSONValue bindings = root.Get("bindings");
+
+    if (bindings.IsArray())
+    {
+        bindingTypes_.Clear();
+
+        for (unsigned i = 0; i < bindings.GetArray().Size(); i++)
+        {
+            String binding = bindings.GetArray()[i].GetString();
+
+            if (binding.ToUpper() == "CSHARP")
+            {
+                bindingTypes_.Push(CSHARP);
+            }
+            else if (binding.ToUpper() == "JAVASCRIPT")
+            {
+                bindingTypes_.Push(JAVASCRIPT);
+            }
+        }
     }
 
     allPackages_.Push(SharedPtr<JSBPackage>(this));

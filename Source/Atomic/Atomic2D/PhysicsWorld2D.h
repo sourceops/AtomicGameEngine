@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -23,6 +23,7 @@
 #pragma once
 
 #include "../Scene/Component.h"
+
 #include <Box2D/Box2D.h>
 
 namespace Atomic
@@ -35,12 +36,16 @@ class RigidBody2D;
 struct ATOMIC_API PhysicsRaycastResult2D
 {
     /// Construct with defaults.
-    PhysicsRaycastResult2D() : body_(0)
+    PhysicsRaycastResult2D() :
+        body_(0)
     {
     }
 
     /// Test for inequality, added to prevent GCC from complaining.
-    bool operator != (const PhysicsRaycastResult2D& rhs) const { return position_ != rhs.position_ || normal_ != rhs.normal_ || distance_ != rhs.distance_ || body_ != rhs.body_; }
+    bool operator !=(const PhysicsRaycastResult2D& rhs) const
+    {
+        return position_ != rhs.position_ || normal_ != rhs.normal_ || distance_ != rhs.distance_ || body_ != rhs.body_;
+    }
 
     /// Hit worldspace position.
     Vector2 position_;
@@ -52,14 +57,27 @@ struct ATOMIC_API PhysicsRaycastResult2D
     RigidBody2D* body_;
 };
 
+/// Delayed world transform assignment for parented 2D rigidbodies.
+struct DelayedWorldTransform2D
+{
+    /// Rigid body.
+    RigidBody2D* rigidBody_;
+    /// Parent rigid body.
+    RigidBody2D* parentRigidBody_;
+    /// New world position.
+    Vector3 worldPosition_;
+    /// New world rotation.
+    Quaternion worldRotation_;
+};
+
 /// 2D physics simulation world component. Should be added only to the root scene node.
 class ATOMIC_API PhysicsWorld2D : public Component, public b2ContactListener, public b2Draw
 {
-    OBJECT(PhysicsWorld2D);
+    ATOMIC_OBJECT(PhysicsWorld2D, Component);
 
 public:
     /// Construct.
-    PhysicsWorld2D(Context* scontext);
+    PhysicsWorld2D(Context* context);
     /// Destruct.
     virtual ~PhysicsWorld2D();
     /// Register object factory.
@@ -68,13 +86,13 @@ public:
     /// Visualize the component as debug geometry.
     virtual void DrawDebugGeometry(DebugRenderer* debug, bool depthTest);
 
-    // Implement b2ContactListener.
+    // Implement b2ContactListener
     /// Called when two fixtures begin to touch.
     virtual void BeginContact(b2Contact* contact);
     /// Called when two fixtures cease to touch.
     virtual void EndContact(b2Contact* contact);
 
-    // Implement b2Draw.
+    // Implement b2Draw
     /// Draw a closed polygon provided in CCW order.
     virtual void DrawPolygon(const b2Vec2* vertices, int32 vertexCount, const b2Color& color);
     /// Draw a solid closed polygon provided in CCW order.
@@ -92,6 +110,8 @@ public:
     void Update(float timeStep);
     /// Add debug geometry to the debug renderer.
     void DrawDebugGeometry();
+    /// Enable or disable automatic physics simulation during scene update. Enabled by default.
+    void SetUpdateEnabled(bool enable);
     /// Set draw shape.
     void SetDrawShape(bool drawShape);
     /// Set draw joint.
@@ -122,11 +142,15 @@ public:
     void AddRigidBody(RigidBody2D* rigidBody);
     /// Remove rigid body.
     void RemoveRigidBody(RigidBody2D* rigidBody);
+    /// Add a delayed world transform assignment. Called by RigidBody2D.
+    void AddDelayedWorldTransform(const DelayedWorldTransform2D& transform);
 
     /// Perform a physics world raycast and return all hits.
-    void Raycast(PODVector<PhysicsRaycastResult2D>& results, const Vector2& startPoint, const Vector2& endPoint, unsigned collisionMask = M_MAX_UNSIGNED);
+    void Raycast(PODVector<PhysicsRaycastResult2D>& results, const Vector2& startPoint, const Vector2& endPoint,
+        unsigned collisionMask = M_MAX_UNSIGNED);
     /// Perform a physics world raycast and return the closest hit.
-    void RaycastSingle(PhysicsRaycastResult2D& result, const Vector2& startPoint, const Vector2& endPoint, unsigned collisionMask = M_MAX_UNSIGNED);
+    void RaycastSingle(PhysicsRaycastResult2D& result, const Vector2& startPoint, const Vector2& endPoint,
+        unsigned collisionMask = M_MAX_UNSIGNED);
     /// Return rigid body at point.
     RigidBody2D* GetRigidBody(const Vector2& point, unsigned collisionMask = M_MAX_UNSIGNED);
     /// Return rigid body at screen point.
@@ -134,16 +158,24 @@ public:
     /// Return rigid bodies by a box query.
     void GetRigidBodies(PODVector<RigidBody2D*>& result, const Rect& aabb, unsigned collisionMask = M_MAX_UNSIGNED);
 
+    /// Return whether physics world will automatically simulate during scene update.
+    bool IsUpdateEnabled() const { return updateEnabled_; }
+
     /// Return draw shape.
     bool GetDrawShape() const { return (m_drawFlags & e_shapeBit) != 0; }
+
     /// Return draw joint.
     bool GetDrawJoint() const { return (m_drawFlags & e_jointBit) != 0; }
+
     /// Return draw aabb.
     bool GetDrawAabb() const { return (m_drawFlags & e_aabbBit) != 0; }
+
     /// Return draw pair.
     bool GetDrawPair() const { return (m_drawFlags & e_pairBit) != 0; }
+
     /// Return draw center of mass.
     bool GetDrawCenterOfMass() const { return (m_drawFlags & e_centerOfMassBit) != 0; }
+
     /// Return allow sleeping.
     bool GetAllowSleeping() const;
     /// Return warm starting.
@@ -154,23 +186,28 @@ public:
     bool GetSubStepping() const;
     /// Return auto clear forces.
     bool GetAutoClearForces() const;
+
     /// Return gravity.
     const Vector2& GetGravity() const { return gravity_; }
+
     /// Return velocity iterations.
     int GetVelocityIterations() const { return velocityIterations_; }
+
     /// Return position iterations.
     int GetPositionIterations() const { return positionIterations_; }
 
     /// Return the Box2D physics world.
     b2World* GetWorld() { return world_; }
+
     /// Set node dirtying to be disregarded.
     void SetApplyingTransforms(bool enable) { applyingTransforms_ = enable; }
+
     /// Return whether node dirtying should be disregarded.
     bool IsApplyingTransforms() const { return applyingTransforms_; }
 
 protected:
-    /// Handle node being assigned.
-    virtual void OnNodeSet(Node* node);
+    /// Handle scene being assigned.
+    virtual void OnSceneSet(Scene* scene);
 
 private:
     /// Handle the scene subsystem update event, step simulation here.
@@ -196,12 +233,16 @@ private:
     /// Debug draw depth test mode.
     bool debugDepthTest_;
 
-    /// Physics steping.
-    bool physicsSteping_;
+    /// Automatic simulation update enabled flag.
+    bool updateEnabled_;
+    /// Whether is currently stepping the world. Used internally.
+    bool physicsStepping_;
     /// Applying transforms.
     bool applyingTransforms_;
     /// Rigid bodies.
     Vector<WeakPtr<RigidBody2D> > rigidBodies_;
+    /// Delayed (parented) world transform assignments.
+    HashMap<RigidBody2D*, DelayedWorldTransform2D> delayedWorldTransforms_;
 
     /// Contact info.
     struct ContactInfo
@@ -221,6 +262,8 @@ private:
         SharedPtr<Node> nodeA_;
         /// Node B.
         SharedPtr<Node> nodeB_;
+        /// Box2D contact.
+        b2Contact* contact_;
     };
     /// Begin contact infos.
     Vector<ContactInfo> beginContactInfos_;

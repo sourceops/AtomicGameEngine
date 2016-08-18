@@ -16,6 +16,8 @@
 // 3. This notice may not be removed or altered from any source distribution.
 //
 
+// Modified by Lasse Oorni, Yao Wei Tjong and cosmy1 for Urho3D
+
 #define _USE_MATH_DEFINES
 #include <string.h>
 #include <float.h>
@@ -330,6 +332,8 @@ Notes:
 */
 
 dtCrowd::dtCrowd() :
+	// Urho3D: Add update callback support
+	m_updateCallback(0),
 	m_maxAgents(0),
 	m_agents(0),
 	m_activeAgents(0),
@@ -342,6 +346,9 @@ dtCrowd::dtCrowd() :
 	m_velocitySampleCount(0),
 	m_navquery(0)
 {
+	// Urho3D: initialize all class members
+	memset(&m_ext, 0, sizeof(m_ext));
+	memset(&m_obstacleQueryParams, 0, sizeof(m_obstacleQueryParams));
 }
 
 dtCrowd::~dtCrowd()
@@ -376,13 +383,15 @@ void dtCrowd::purge()
 	m_navquery = 0;
 }
 
+// Urho3D: Add update callback support
 /// @par
 ///
 /// May be called more than once to purge and re-initialize the crowd.
-bool dtCrowd::init(const int maxAgents, const float maxAgentRadius, dtNavMesh* nav)
+bool dtCrowd::init(const int maxAgents, const float maxAgentRadius, dtNavMesh* nav, dtUpdateCallback cb)
 {
 	purge();
-	
+
+	m_updateCallback = cb;
 	m_maxAgents = maxAgents;
 	m_maxAgentRadius = maxAgentRadius;
 
@@ -561,6 +570,9 @@ int dtCrowd::addAgent(const float* pos, const dtCrowdAgentParams* params)
 	ag->targetState = DT_CROWDAGENT_TARGET_NONE;
 	
 	ag->active = true;
+
+    // Urho3D: added to fix illegal memory access when ncorners is queried before the agent has updated
+    ag->ncorners = 0;
 
 	return idx;
 }
@@ -1404,6 +1416,9 @@ void dtCrowd::update(const float dt, dtCrowdAgentDebugInfo* debug)
 			ag->partial = false;
 		}
 
+		// Urho3D: Add update callback support
+		if (m_updateCallback)
+			(*m_updateCallback)(ag, dt);
 	}
 	
 	// Update agents using off-mesh connection.

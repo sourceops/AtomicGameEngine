@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,7 +30,7 @@ namespace Atomic
 /// Component which tags geometry for inclusion in the navigation mesh. Optionally auto-includes geometry from child nodes.
 class ATOMIC_API Navigable : public Component
 {
-    OBJECT(Navigable);
+    ATOMIC_OBJECT(Navigable, Component);
 
 public:
     /// Construct.
@@ -42,6 +42,7 @@ public:
 
     /// Set whether geometry is automatically collected from child nodes. Default true.
     void SetRecursive(bool enable);
+
     /// Return whether geometry is automatically collected from child nodes.
     bool IsRecursive() const { return recursive_; }
 

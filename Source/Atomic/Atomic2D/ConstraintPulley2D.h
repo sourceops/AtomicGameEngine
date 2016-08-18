@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,11 +30,11 @@ namespace Atomic
 /// 2D pulley constraint component.
 class ATOMIC_API ConstraintPulley2D : public Constraint2D
 {
-    OBJECT(ConstraintPulley2D);
+    ATOMIC_OBJECT(ConstraintPulley2D, Constraint2D);
 
 public:
     /// Construct.
-    ConstraintPulley2D(Context* scontext);
+    ConstraintPulley2D(Context* context);
     /// Destruct.
     virtual ~ConstraintPulley2D();
     /// Register object factory.
@@ -53,12 +53,16 @@ public:
 
     /// Return owner body ground anchor.
     const Vector2& GetOwnerBodyGroundAnchor() const { return ownerBodyGroundAnchor_; }
+
     /// return other body ground anchor.
     const Vector2& GetOtherBodyGroundAnchor() const { return otherBodyGroundAnchor_; }
+
     /// Return owner body anchor.
     const Vector2& GetOwnerBodyAnchor() const { return ownerBodyAnchor_; }
+
     /// Return other body anchor.
     const Vector2& GetOtherBodyAnchor() const { return otherBodyAnchor_; }
+
     /// Return ratio.
     float GetRatio() const { return jointDef_.ratio; }
 

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,14 +20,13 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/CoreEvents.h"
-#include "../IO/Log.h"
 #include "../Core/ProcessUtils.h"
 #include "../Core/Profiler.h"
-#include "../Core/Thread.h"
-#include "../Core/Timer.h"
 #include "../Core/WorkQueue.h"
+#include "../IO/Log.h"
 
 namespace Atomic
 {
@@ -35,6 +34,8 @@ namespace Atomic
 /// Worker thread managed by the work queue.
 class WorkerThread : public Thread, public RefCounted
 {
+    ATOMIC_REFCOUNTED(WorkerThread)
+
 public:
     /// Construct.
     WorkerThread(WorkQueue* owner, unsigned index) :
@@ -42,7 +43,7 @@ public:
         index_(index)
     {
     }
-    
+
     /// Process work items until stopped.
     virtual void ThreadFunction()
     {
@@ -50,10 +51,10 @@ public:
         InitFPU();
         owner_->ProcessItems(index_);
     }
-    
+
     /// Return thread index.
     unsigned GetIndex() const { return index_; }
-    
+
 private:
     /// Work queue.
     WorkQueue* owner_;
@@ -66,11 +67,12 @@ WorkQueue::WorkQueue(Context* context) :
     shutDown_(false),
     pausing_(false),
     paused_(false),
+    completing_(false),
     tolerance_(10),
     lastSize_(0),
     maxNonThreadedWorkMs_(5)
 {
-    SubscribeToEvent(E_BEGINFRAME, HANDLER(WorkQueue, HandleBeginFrame));
+    SubscribeToEvent(E_BEGINFRAME, ATOMIC_HANDLER(WorkQueue, HandleBeginFrame));
 }
 
 WorkQueue::~WorkQueue()
@@ -78,27 +80,31 @@ WorkQueue::~WorkQueue()
     // Stop the worker threads. First make sure they are not waiting for work items
     shutDown_ = true;
     Resume();
-    
+
     for (unsigned i = 0; i < threads_.Size(); ++i)
         threads_[i]->Stop();
 }
 
 void WorkQueue::CreateThreads(unsigned numThreads)
 {
+#ifdef ATOMIC_THREADING
     // Other subsystems may initialize themselves according to the number of threads.
     // Therefore allow creating the threads only once, after which the amount is fixed
     if (!threads_.Empty())
         return;
-    
+
     // Start threads in paused mode
     Pause();
-    
+
     for (unsigned i = 0; i < numThreads; ++i)
     {
         SharedPtr<WorkerThread> thread(new WorkerThread(this, i + 1));
         thread->Run();
         threads_.Push(thread);
     }
+#else
+    ATOMIC_LOGERROR("Can not create worker threads as threading is disabled");
+#endif
 }
 
 SharedPtr<WorkItem> WorkQueue::GetFreeItem()
@@ -122,13 +128,13 @@ void WorkQueue::AddWorkItem(SharedPtr<WorkItem> item)
 {
     if (!item)
     {
-        LOGERROR("Null work item submitted to the work queue");
+        ATOMIC_LOGERROR("Null work item submitted to the work queue");
         return;
     }
-    
+
     // Check for duplicate items.
     assert(!workItems_.Contains(item));
-    
+
     // Push to the main thread list to keep item alive
     // Clear completed flag in case item is reused
     workItems_.Push(item);
@@ -137,7 +143,7 @@ void WorkQueue::AddWorkItem(SharedPtr<WorkItem> item)
     // Make sure worker threads' list is safe to modify
     if (threads_.Size() && !paused_)
         queueMutex_.Acquire();
-    
+
     // Find position for new item
     if (queue_.Empty())
         queue_.Push(item);
@@ -152,7 +158,7 @@ void WorkQueue::AddWorkItem(SharedPtr<WorkItem> item)
             }
         }
     }
-    
+
     if (threads_.Size())
     {
         queueMutex_.Release();
@@ -166,7 +172,7 @@ bool WorkQueue::RemoveWorkItem(SharedPtr<WorkItem> item)
         return false;
 
     MutexLock lock(queueMutex_);
-    
+
     // Can only remove successfully if the item was not yet taken by threads for execution
     List<WorkItem*>::Iterator i = queue_.Find(item.Get());
     if (i != queue_.End())
@@ -213,10 +219,10 @@ void WorkQueue::Pause()
     if (!paused_)
     {
         pausing_ = true;
-        
+
         queueMutex_.Acquire();
         paused_ = true;
-        
+
         pausing_ = false;
     }
 }
@@ -233,10 +239,12 @@ void WorkQueue::Resume()
 
 void WorkQueue::Complete(unsigned priority)
 {
+    completing_ = true;
+
     if (threads_.Size())
     {
         Resume();
-        
+
         // Take work items also in the main thread until queue empty or no high-priority items anymore
         while (!queue_.Empty())
         {
@@ -255,12 +263,12 @@ void WorkQueue::Complete(unsigned priority)
                 break;
             }
         }
-        
+
         // Wait for threaded work to complete
         while (!IsCompleted(priority))
         {
         }
-        
+
         // If no work at all remaining, pause worker threads by leaving the mutex locked
         if (queue_.Empty())
             Pause();
@@ -276,8 +284,9 @@ void WorkQueue::Complete(unsigned priority)
             item->completed_ = true;
         }
     }
-    
+
     PurgeCompleted(priority);
+    completing_ = false;
 }
 
 bool WorkQueue::IsCompleted(unsigned priority) const
@@ -287,19 +296,19 @@ bool WorkQueue::IsCompleted(unsigned priority) const
         if ((*i)->priority_ >= priority && !(*i)->completed_)
             return false;
     }
-    
+
     return true;
 }
 
 void WorkQueue::ProcessItems(unsigned threadIndex)
 {
     bool wasActive = false;
-    
+
     for (;;)
     {
         if (shutDown_)
             return;
-        
+
         if (pausing_ && !wasActive)
             Time::Sleep(0);
         else
@@ -308,7 +317,7 @@ void WorkQueue::ProcessItems(unsigned threadIndex)
             if (!queue_.Empty())
             {
                 wasActive = true;
-                
+
                 WorkItem* item = queue_.Front();
                 queue_.PopFront();
                 queueMutex_.Release();
@@ -318,7 +327,7 @@ void WorkQueue::ProcessItems(unsigned threadIndex)
             else
             {
                 wasActive = false;
-                
+
                 queueMutex_.Release();
                 Time::Sleep(0);
             }
@@ -338,7 +347,7 @@ void WorkQueue::PurgeCompleted(unsigned priority)
             if ((*i)->sendEvent_)
             {
                 using namespace WorkItemCompleted;
-                
+
                 VariantMap& eventData = GetEventDataMap();
                 eventData[P_ITEM] = i->Get();
                 SendEvent(E_WORKITEMCOMPLETED, eventData);
@@ -390,10 +399,10 @@ void WorkQueue::HandleBeginFrame(StringHash eventType, VariantMap& eventData)
     // If no worker threads, complete low-priority work here
     if (threads_.Empty() && !queue_.Empty())
     {
-        PROFILE(CompleteWorkNonthreaded);
-        
+        ATOMIC_PROFILE(CompleteWorkNonthreaded);
+
         HiresTimer timer;
-        
+
         while (!queue_.Empty() && timer.GetUSec(false) < maxNonThreadedWorkMs_ * 1000)
         {
             WorkItem* item = queue_.Front();
@@ -402,7 +411,7 @@ void WorkQueue::HandleBeginFrame(StringHash eventType, VariantMap& eventData)
             item->completed_ = true;
         }
     }
-    
+
     // Complete and signal items down to the lowest priority
     PurgeCompleted(0);
     PurgePool();

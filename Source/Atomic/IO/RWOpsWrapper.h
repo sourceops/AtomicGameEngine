@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,9 @@
 
 #include "../IO/File.h"
 
+// ATOMIC BEGIN
 #include <SDL/include/SDL_rwops.h>
+// ATOMIC END
 
 namespace Atomic
 {
@@ -78,6 +80,10 @@ private:
         case RW_SEEK_END:
             des->Seek((unsigned)(des->GetSize() + offset));
             break;
+
+        default:
+            assert(false);  // Should never reach here
+            break;
         }
 
         return (Sint64)des->GetPosition();
@@ -98,7 +104,7 @@ private:
     {
         T* object = reinterpret_cast<T*>(context->hidden.unknown.data1);
         Deserializer* des = dynamic_cast<Deserializer*>(object);
-        return des ? (size_t)(des->Read(ptr, size * maxNum) / size) : 0;
+        return des ? (size_t)(des->Read(ptr, (unsigned)(size * maxNum)) / size) : 0;
     }
 
     /// Write to the object. Return number of "packets" written.
@@ -106,7 +112,7 @@ private:
     {
         T* object = reinterpret_cast<T*>(context->hidden.unknown.data1);
         Serializer* ser = dynamic_cast<Serializer*>(object);
-        return ser ? (size_t)(ser->Write(ptr, size * maxNum) / size) : 0;
+        return ser ? (size_t)(ser->Write(ptr, (unsigned)(size * maxNum)) / size) : 0;
     }
 
     /// SDL RWOps structure associated with the object.

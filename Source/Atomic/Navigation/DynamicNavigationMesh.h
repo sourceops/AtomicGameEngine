@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -40,7 +40,8 @@ class Obstacle;
 
 class ATOMIC_API DynamicNavigationMesh : public NavigationMesh
 {
-    OBJECT(DynamicNavigationMesh)
+    ATOMIC_OBJECT(DynamicNavigationMesh, NavigationMesh)
+
     friend class Obstacle;
     friend struct MeshProcess;
 
@@ -69,19 +70,25 @@ public:
 
     /// Set the maximum number of obstacles allowed.
     void SetMaxObstacles(unsigned maxObstacles) { maxObstacles_ = maxObstacles; }
+    /// Set the maximum number of layers that navigation construction can create.
+    void SetMaxLayers(unsigned maxLayers);
+
     /// Return the maximum number of obstacles allowed.
     unsigned GetMaxObstacles() const { return maxObstacles_; }
+    /// Return the maximum number of layers permitted to build.
+    unsigned GetMaxLayers() const { return maxLayers_; }
 
     /// Draw debug geometry for Obstacles.
     void SetDrawObstacles(bool enable) { drawObstacles_ = enable; }
+
     /// Return whether to draw Obstacles.
     bool GetDrawObstacles() const { return drawObstacles_; }
 
 protected:
     struct TileCacheData;
 
-    /// Subscribe to events when assigned to a node.
-    virtual void OnNodeSet(Node*);
+    /// Subscribe to events when assigned to a scene.
+    virtual void OnSceneSet(Scene* scene);
     /// Trigger the tile cache to make updates to the nav mesh if necessary.
     void HandleSceneSubsystemUpdate(StringHash eventType, VariantMap& eventData);
 
@@ -113,6 +120,8 @@ private:
     dtTileCacheMeshProcess* meshProcessor_;
     /// Maximum number of obstacle objects allowed.
     unsigned maxObstacles_;
+    /// Maximum number of layers that are allowed to be constructed.
+    unsigned maxLayers_;
     /// Debug draw Obstacles.
     bool drawObstacles_;
 };

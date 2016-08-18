@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +20,12 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Math/Frustum.h"
 #include "../Math/Polyhedron.h"
+
+#include "../DebugNew.h"
 
 namespace Atomic
 {
@@ -31,8 +34,8 @@ void Sphere::Define(const Vector3* vertices, unsigned count)
 {
     if (!count)
         return;
-    
-    defined_ = false;
+
+    Clear();
     Merge(vertices, count);
 }
 
@@ -40,8 +43,8 @@ void Sphere::Define(const BoundingBox& box)
 {
     const Vector3& min = box.min_;
     const Vector3& max = box.max_;
-    
-    defined_ = false;
+
+    Clear();
     Merge(min);
     Merge(Vector3(max.x_, min.y_, min.z_));
     Merge(Vector3(min.x_, max.y_, min.z_));
@@ -59,7 +62,7 @@ void Sphere::Define(const Frustum& frustum)
 
 void Sphere::Define(const Polyhedron& poly)
 {
-    defined_ = false;
+    Clear();
     Merge(poly);
 }
 
@@ -73,7 +76,7 @@ void Sphere::Merge(const BoundingBox& box)
 {
     const Vector3& min = box.min_;
     const Vector3& max = box.max_;
-    
+
     Merge(min);
     Merge(Vector3(max.x_, min.y_, min.z_));
     Merge(Vector3(min.x_, max.y_, min.z_));
@@ -102,21 +105,20 @@ void Sphere::Merge(const Polyhedron& poly)
 
 void Sphere::Merge(const Sphere& sphere)
 {
-    if (!defined_)
+    if (radius_ < 0.0f)
     {
         center_ = sphere.center_;
         radius_ = sphere.radius_;
-        defined_ = true;
         return;
     }
-    
+
     Vector3 offset = sphere.center_ - center_;
     float dist = offset.Length();
-    
+
     // If sphere fits inside, do nothing
     if (dist + sphere.radius_ < radius_)
         return;
-    
+
     // If we fit inside the other sphere, become it
     if (dist + radius_ < sphere.radius_)
     {
@@ -126,7 +128,7 @@ void Sphere::Merge(const Sphere& sphere)
     else
     {
         Vector3 NormalizedOffset = offset / dist;
-        
+
         Vector3 min = center_ - radius_ * NormalizedOffset;
         Vector3 max = sphere.center_ + sphere.radius_ * NormalizedOffset;
         center_ = (min + max) * 0.5f;
@@ -141,7 +143,7 @@ Intersection Sphere::IsInside(const BoundingBox& box) const
     float temp;
     Vector3 min = box.min_;
     Vector3 max = box.max_;
-    
+
     if (center_.x_ < min.x_)
     {
         temp = center_.x_ - min.x_;
@@ -172,13 +174,13 @@ Intersection Sphere::IsInside(const BoundingBox& box) const
         temp = center_.z_ - max.z_;
         distSquared += temp * temp;
     }
-    
+
     if (distSquared >= radiusSquared)
         return OUTSIDE;
-    
+
     min -= center_;
     max -= center_;
-    
+
     Vector3 tempVec = min; // - - -
     if (tempVec.LengthSquared() >= radiusSquared)
         return INTERSECTS;
@@ -203,7 +205,7 @@ Intersection Sphere::IsInside(const BoundingBox& box) const
     tempVec.y_ = max.y_; // + + +
     if (tempVec.LengthSquared() >= radiusSquared)
         return INTERSECTS;
-    
+
     return INSIDE;
 }
 
@@ -214,7 +216,7 @@ Intersection Sphere::IsInsideFast(const BoundingBox& box) const
     float temp;
     Vector3 min = box.min_;
     Vector3 max = box.max_;
-    
+
     if (center_.x_ < min.x_)
     {
         temp = center_.x_ - min.x_;
@@ -245,7 +247,7 @@ Intersection Sphere::IsInsideFast(const BoundingBox& box) const
         temp = center_.z_ - max.z_;
         distSquared += temp * temp;
     }
-    
+
     if (distSquared >= radiusSquared)
         return OUTSIDE;
     else

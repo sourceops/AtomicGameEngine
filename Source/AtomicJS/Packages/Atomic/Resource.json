@@ -1,5 +1,0 @@
-{
-	"name" : "Resource",
-	"sources" : ["Source/Atomic/Resource"],
-	"classes" : ["Resource", "ResourceCache", "XMLFile", "PListFile", "JSONFile", "Image"]
-}

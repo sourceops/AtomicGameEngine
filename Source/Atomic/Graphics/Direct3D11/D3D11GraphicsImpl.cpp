@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,8 +20,9 @@
 // THE SOFTWARE.
 //
 
+#include "../../Precompiled.h"
+
 #include "../../Graphics/Graphics.h"
-#include "../../Graphics/GraphicsEvents.h"
 #include "../../Graphics/GraphicsImpl.h"
 
 #include "../../DebugNew.h"
@@ -30,14 +31,15 @@ namespace Atomic
 {
 
 GraphicsImpl::GraphicsImpl() :
-    window_(0),
     device_(0),
     deviceContext_(0),
     swapChain_(0),
     defaultRenderTargetView_(0),
     defaultDepthTexture_(0),
     defaultDepthStencilView_(0),
-    depthStencilView_(0)
+    depthStencilView_(0),
+    resolveTexture_(0),
+    shaderProgram_(0)
 {
     for (unsigned i = 0; i < MAX_RENDERTARGETS; ++i)
         renderTargetViews_[i] = 0;

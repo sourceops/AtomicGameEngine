@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,17 +20,20 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
-#include "../Atomic2D/CollisionChain2D.h"
 #include "../IO/MemoryBuffer.h"
-#include "../Atomic2D/PhysicsUtils2D.h"
 #include "../IO/VectorBuffer.h"
+#include "../Atomic2D/CollisionChain2D.h"
+#include "../Atomic2D/PhysicsUtils2D.h"
 
 #include "../DebugNew.h"
 
 namespace Atomic
 {
+
+extern const char* ATOMIC2D_CATEGORY;
 
 CollisionChain2D::CollisionChain2D(Context* context) :
     CollisionShape2D(context),
@@ -45,12 +48,12 @@ CollisionChain2D::~CollisionChain2D()
 
 void CollisionChain2D::RegisterObject(Context* context)
 {
-    context->RegisterFactory<CollisionChain2D>();
+    context->RegisterFactory<CollisionChain2D>(ATOMIC2D_CATEGORY);
 
-    ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Loop", GetLoop, SetLoop, bool, false, AM_DEFAULT);
-    COPY_BASE_ATTRIBUTES(CollisionShape2D);
-    MIXED_ACCESSOR_ATTRIBUTE("Vertices", GetVerticesAttr, SetVerticesAttr, PODVector<unsigned char>, Variant::emptyBuffer, AM_FILE);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Loop", GetLoop, SetLoop, bool, false, AM_DEFAULT);
+    ATOMIC_COPY_BASE_ATTRIBUTES(CollisionShape2D);
+    ATOMIC_MIXED_ACCESSOR_ATTRIBUTE("Vertices", GetVerticesAttr, SetVerticesAttr, PODVector<unsigned char>, Variant::emptyBuffer, AM_FILE);
 }
 
 void CollisionChain2D::SetLoop(bool loop)

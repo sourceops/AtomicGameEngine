@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,40 +20,30 @@
 // THE SOFTWARE.
 //
 
+#include "../../Precompiled.h"
+
 #include "../../Graphics/Graphics.h"
 #include "../../Graphics/GraphicsImpl.h"
-#include "../../IO/Log.h"
 #include "../../Graphics/ConstantBuffer.h"
+#include "../../IO/Log.h"
 
 #include "../../DebugNew.h"
 
 namespace Atomic
 {
 
-
-ConstantBuffer::ConstantBuffer(Context* context) :
-    Object(context),
-    GPUObject(GetSubsystem<Graphics>())
-{
-}
-
-ConstantBuffer::~ConstantBuffer()
-{
-    Release();
-}
-
 void ConstantBuffer::Release()
 {
-    if (object_)
+    if (object_.name_)
     {
         if (!graphics_)
             return;
 
-        #ifndef GL_ES_VERSION_2_0
+#ifndef GL_ES_VERSION_2_0
         graphics_->SetUBO(0);
-        glDeleteBuffers(1, &object_);
-        #endif
-        object_ = 0;
+        glDeleteBuffers(1, &object_.name_);
+#endif
+        object_.name_ = 0;
     }
 
     shadowData_.Reset();
@@ -70,7 +60,7 @@ bool ConstantBuffer::SetSize(unsigned size)
 {
     if (!size)
     {
-        LOGERROR("Can not create zero-sized constant buffer");
+        ATOMIC_LOGERROR("Can not create zero-sized constant buffer");
         return false;
     }
 
@@ -85,53 +75,25 @@ bool ConstantBuffer::SetSize(unsigned size)
 
     if (graphics_)
     {
-        #ifndef GL_ES_VERSION_2_0
-        if (!object_)
-            glGenBuffers(1, &object_);
-        graphics_->SetUBO(object_);
+#ifndef GL_ES_VERSION_2_0
+        if (!object_.name_)
+            glGenBuffers(1, &object_.name_);
+        graphics_->SetUBO(object_.name_);
         glBufferData(GL_UNIFORM_BUFFER, size_, shadowData_.Get(), GL_DYNAMIC_DRAW);
-        #endif
+#endif
     }
 
     return true;
 }
 
-void ConstantBuffer::SetParameter(unsigned offset, unsigned size, const void* data)
-{
-    if (offset + size > size_)
-        return; // Would overflow the buffer
-
-    memcpy(&shadowData_[offset], data, size);
-    dirty_ = true;
-}
-
-void ConstantBuffer::SetVector3ArrayParameter(unsigned offset, unsigned rows, const void* data)
-{
-    if (offset + rows * 4 * sizeof(float) > size_)
-        return; // Would overflow the buffer
-
-    float* dest = (float*)&shadowData_[offset];
-    const float* src = (const float*)data;
-
-    while (rows--)
-    {
-        *dest++ = *src++;
-        *dest++ = *src++;
-        *dest++ = *src++;
-        ++dest; // Skip over the w coordinate
-    }
-
-    dirty_ = true;
-}
-
 void ConstantBuffer::Apply()
 {
-    if (dirty_ && object_)
+    if (dirty_ && object_.name_)
     {
-        #ifndef GL_ES_VERSION_2_0
-        graphics_->SetUBO(object_);
+#ifndef GL_ES_VERSION_2_0
+        graphics_->SetUBO(object_.name_);
         glBufferData(GL_UNIFORM_BUFFER, size_, shadowData_.Get(), GL_DYNAMIC_DRAW);
-        #endif
+#endif
         dirty_ = false;
     }
 }

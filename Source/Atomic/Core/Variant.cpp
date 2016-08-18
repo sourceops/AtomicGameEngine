@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,8 +20,10 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/StringUtils.h"
+#include "../IO/VectorBuffer.h"
 
 #include <cstring>
 
@@ -34,6 +36,7 @@ const ResourceRef Variant::emptyResourceRef;
 const ResourceRefList Variant::emptyResourceRefList;
 const VariantMap Variant::emptyVariantMap;
 const VariantVector Variant::emptyVariantVector;
+const StringVector Variant::emptyStringVector;
 
 static const char* typeNames[] =
 {
@@ -59,10 +62,12 @@ static const char* typeNames[] =
     "Matrix3",
     "Matrix3x4",
     "Matrix4",
+    "Double",
+    "StringVector",
     0
 };
 
-Variant& Variant::operator = (const Variant& rhs)
+Variant& Variant::operator =(const Variant& rhs)
 {
     SetType(rhs.GetType());
 
@@ -88,6 +93,10 @@ Variant& Variant::operator = (const Variant& rhs)
         *(reinterpret_cast<VariantVector*>(&value_)) = *(reinterpret_cast<const VariantVector*>(&rhs.value_));
         break;
 
+    case VAR_STRINGVECTOR:
+        *(reinterpret_cast<StringVector*>(&value_)) = *(reinterpret_cast<const StringVector*>(&rhs.value_));
+        break;
+
     case VAR_VARIANTMAP:
         *(reinterpret_cast<VariantMap*>(&value_)) = *(reinterpret_cast<const VariantMap*>(&rhs.value_));
         break;
@@ -95,19 +104,19 @@ Variant& Variant::operator = (const Variant& rhs)
     case VAR_PTR:
         *(reinterpret_cast<WeakPtr<RefCounted>*>(&value_)) = *(reinterpret_cast<const WeakPtr<RefCounted>*>(&rhs.value_));
         break;
-        
+
     case VAR_MATRIX3:
         *(reinterpret_cast<Matrix3*>(value_.ptr_)) = *(reinterpret_cast<const Matrix3*>(rhs.value_.ptr_));
         break;
-        
+
     case VAR_MATRIX3X4:
         *(reinterpret_cast<Matrix3x4*>(value_.ptr_)) = *(reinterpret_cast<const Matrix3x4*>(rhs.value_.ptr_));
         break;
-        
+
     case VAR_MATRIX4:
         *(reinterpret_cast<Matrix4*>(value_.ptr_)) = *(reinterpret_cast<const Matrix4*>(rhs.value_.ptr_));
         break;
-        
+
     default:
         value_ = rhs.value_;
         break;
@@ -116,13 +125,20 @@ Variant& Variant::operator = (const Variant& rhs)
     return *this;
 }
 
-bool Variant::operator == (const Variant& rhs) const
+Variant& Variant::operator =(const VectorBuffer& rhs)
+{
+    SetType(VAR_BUFFER);
+    *(reinterpret_cast<PODVector<unsigned char>*>(&value_)) = rhs.GetBuffer();
+    return *this;
+}
+
+bool Variant::operator ==(const Variant& rhs) const
 {
     if (type_ == VAR_VOIDPTR || type_ == VAR_PTR)
         return GetVoidPtr() == rhs.GetVoidPtr();
     else if (type_ != rhs.type_)
         return false;
-    
+
     switch (type_)
     {
     case VAR_INT:
@@ -150,7 +166,8 @@ bool Variant::operator == (const Variant& rhs) const
         return *(reinterpret_cast<const String*>(&value_)) == *(reinterpret_cast<const String*>(&rhs.value_));
 
     case VAR_BUFFER:
-        return *(reinterpret_cast<const PODVector<unsigned char>*>(&value_)) == *(reinterpret_cast<const PODVector<unsigned char>*>(&rhs.value_));
+        return *(reinterpret_cast<const PODVector<unsigned char>*>(&value_)) ==
+               *(reinterpret_cast<const PODVector<unsigned char>*>(&rhs.value_));
 
     case VAR_RESOURCEREF:
         return *(reinterpret_cast<const ResourceRef*>(&value_)) == *(reinterpret_cast<const ResourceRef*>(&rhs.value_));
@@ -160,6 +177,9 @@ bool Variant::operator == (const Variant& rhs) const
 
     case VAR_VARIANTVECTOR:
         return *(reinterpret_cast<const VariantVector*>(&value_)) == *(reinterpret_cast<const VariantVector*>(&rhs.value_));
+
+    case VAR_STRINGVECTOR:
+        return *(reinterpret_cast<const StringVector*>(&value_)) == *(reinterpret_cast<const StringVector*>(&rhs.value_));
 
     case VAR_VARIANTMAP:
         return *(reinterpret_cast<const VariantMap*>(&value_)) == *(reinterpret_cast<const VariantMap*>(&rhs.value_));
@@ -179,9 +199,29 @@ bool Variant::operator == (const Variant& rhs) const
     case VAR_MATRIX4:
         return *(reinterpret_cast<const Matrix4*>(value_.ptr_)) == *(reinterpret_cast<const Matrix4*>(rhs.value_.ptr_));
 
+    case VAR_DOUBLE:
+        return *(reinterpret_cast<const double*>(&value_)) == *(reinterpret_cast<const double*>(&rhs.value_));
+
     default:
         return true;
     }
+}
+
+bool Variant::operator ==(const PODVector<unsigned char>& rhs) const
+{
+    // Use strncmp() instead of PODVector<unsigned char>::operator ==()
+    const PODVector<unsigned char>& buffer = *(reinterpret_cast<const PODVector<unsigned char>*>(&value_));
+    return type_ == VAR_BUFFER && buffer.Size() == rhs.Size() ?
+        strncmp(reinterpret_cast<const char*>(&buffer[0]), reinterpret_cast<const char*>(&rhs[0]), buffer.Size()) == 0 :
+        false;
+}
+
+bool Variant::operator ==(const VectorBuffer& rhs) const
+{
+    const PODVector<unsigned char>& buffer = *(reinterpret_cast<const PODVector<unsigned char>*>(&value_));
+    return type_ == VAR_BUFFER && buffer.Size() == rhs.GetSize() ?
+        strncmp(reinterpret_cast<const char*>(&buffer[0]), reinterpret_cast<const char*>(rhs.GetData()), buffer.Size()) == 0 :
+        false;
 }
 
 void Variant::FromString(const String& type, const String& value)
@@ -240,11 +280,11 @@ void Variant::FromString(VariantType type, const char* value)
         break;
 
     case VAR_BUFFER:
-        {
-            SetType(VAR_BUFFER);
-            PODVector<unsigned char>& buffer = *(reinterpret_cast<PODVector<unsigned char>*>(&value_));
-            StringToBuffer(buffer, value);
-        }
+    {
+        SetType(VAR_BUFFER);
+        PODVector<unsigned char>& buffer = *(reinterpret_cast<PODVector<unsigned char>*>(&value_));
+        StringToBuffer(buffer, value);
+    }
         break;
 
     case VAR_VOIDPTR:
@@ -253,31 +293,31 @@ void Variant::FromString(VariantType type, const char* value)
         break;
 
     case VAR_RESOURCEREF:
+    {
+        StringVector values = String::Split(value, ';');
+        if (values.Size() == 2)
         {
-            Vector<String> values = String::Split(value, ';');
-            if (values.Size() == 2)
-            {
-                SetType(VAR_RESOURCEREF);
-                ResourceRef& ref = *(reinterpret_cast<ResourceRef*>(&value_));
-                ref.type_ = values[0];
-                ref.name_ = values[1];
-            }
+            SetType(VAR_RESOURCEREF);
+            ResourceRef& ref = *(reinterpret_cast<ResourceRef*>(&value_));
+            ref.type_ = values[0];
+            ref.name_ = values[1];
         }
+    }
         break;
 
     case VAR_RESOURCEREFLIST:
+    {
+        StringVector values = String::Split(value, ';', true);
+        if (values.Size() >= 1)
         {
-            Vector<String> values = String::Split(value, ';');
-            if (values.Size() >= 1)
-            {
-                SetType(VAR_RESOURCEREFLIST);
-                ResourceRefList& refList = *(reinterpret_cast<ResourceRefList*>(&value_));
-                refList.type_ = values[0];
-                refList.names_.Resize(values.Size() - 1);
-                for (unsigned i = 1; i < values.Size(); ++i)
-                    refList.names_[i - 1] = values[i];
-            }
+            SetType(VAR_RESOURCEREFLIST);
+            ResourceRefList& refList = *(reinterpret_cast<ResourceRefList*>(&value_));
+            refList.type_ = values[0];
+            refList.names_.Resize(values.Size() - 1);
+            for (unsigned i = 1; i < values.Size(); ++i)
+                refList.names_[i - 1] = values[i];
         }
+    }
         break;
 
     case VAR_INTRECT:
@@ -292,19 +332,23 @@ void Variant::FromString(VariantType type, const char* value)
         // From string to RefCounted pointer not supported, set to null
         *this = (RefCounted*)0;
         break;
-        
+
     case VAR_MATRIX3:
         *this = ToMatrix3(value);
         break;
-        
+
     case VAR_MATRIX3X4:
         *this = ToMatrix3x4(value);
         break;
-        
+
     case VAR_MATRIX4:
         *this = ToMatrix4(value);
         break;
-        
+
+    case VAR_DOUBLE:
+        *this = ToDouble(value);
+        break;
+
     default:
         SetType(VAR_NONE);
     }
@@ -320,6 +364,11 @@ void Variant::SetBuffer(const void* data, unsigned size)
     buffer.Resize(size);
     if (size)
         memcpy(&buffer[0], data, size);
+}
+
+VectorBuffer Variant::GetVectorBuffer() const
+{
+    return VectorBuffer(type_ == VAR_BUFFER ? *reinterpret_cast<const PODVector<unsigned char>*>(&value_) : emptyBuffer);
 }
 
 String Variant::GetTypeName() const
@@ -377,20 +426,23 @@ String Variant::ToString() const
     case VAR_INTVECTOR2:
         return (reinterpret_cast<const IntVector2*>(&value_))->ToString();
 
-    default:
-        // VAR_RESOURCEREF, VAR_RESOURCEREFLIST, VAR_VARIANTVECTOR, VAR_VARIANTMAP
-        // Reference string serialization requires typehash-to-name mapping from the context. Can not support here
-        // Also variant map or vector string serialization is not supported. XML or binary save should be used instead
-        return String::EMPTY;
-
     case VAR_MATRIX3:
         return (reinterpret_cast<const Matrix3*>(value_.ptr_))->ToString();
 
     case VAR_MATRIX3X4:
         return (reinterpret_cast<const Matrix3x4*>(value_.ptr_))->ToString();
-        
+
     case VAR_MATRIX4:
         return (reinterpret_cast<const Matrix4*>(value_.ptr_))->ToString();
+
+    case VAR_DOUBLE:
+        return String(*reinterpret_cast<const double*>(&value_));
+
+    default:
+        // VAR_RESOURCEREF, VAR_RESOURCEREFLIST, VAR_VARIANTVECTOR, VAR_STRINGVECTOR, VAR_VARIANTMAP
+        // Reference string serialization requires typehash-to-name mapping from the context. Can not support here
+        // Also variant map or vector string serialization is not supported. XML or binary save should be used instead
+        return String::EMPTY;
     }
 }
 
@@ -437,8 +489,8 @@ bool Variant::IsZero() const
 
     case VAR_RESOURCEREFLIST:
     {
-        const Vector<String>& names = reinterpret_cast<const ResourceRefList*>(&value_)->names_;
-        for (Vector<String>::ConstIterator i = names.Begin(); i != names.End(); ++i)
+        const StringVector& names = reinterpret_cast<const ResourceRefList*>(&value_)->names_;
+        for (StringVector::ConstIterator i = names.Begin(); i != names.End(); ++i)
         {
             if (!i->Empty())
                 return false;
@@ -448,6 +500,9 @@ bool Variant::IsZero() const
 
     case VAR_VARIANTVECTOR:
         return reinterpret_cast<const VariantVector*>(&value_)->Empty();
+
+    case VAR_STRINGVECTOR:
+        return reinterpret_cast<const StringVector*>(&value_)->Empty();
 
     case VAR_VARIANTMAP:
         return reinterpret_cast<const VariantMap*>(&value_)->Empty();
@@ -460,16 +515,19 @@ bool Variant::IsZero() const
 
     case VAR_PTR:
         return *reinterpret_cast<const WeakPtr<RefCounted>*>(&value_) == (RefCounted*)0;
-        
+
     case VAR_MATRIX3:
         return *reinterpret_cast<const Matrix3*>(value_.ptr_) == Matrix3::IDENTITY;
-        
+
     case VAR_MATRIX3X4:
         return *reinterpret_cast<const Matrix3x4*>(value_.ptr_) == Matrix3x4::IDENTITY;
-        
+
     case VAR_MATRIX4:
         return *reinterpret_cast<const Matrix4*>(value_.ptr_) == Matrix4::IDENTITY;
-        
+
+    case VAR_DOUBLE:
+        return *reinterpret_cast<const double*>(&value_) == 0.0;
+
     default:
         return true;
     }
@@ -502,6 +560,10 @@ void Variant::SetType(VariantType newType)
         (reinterpret_cast<VariantVector*>(&value_))->~VariantVector();
         break;
 
+    case VAR_STRINGVECTOR:
+        (reinterpret_cast<StringVector*>(&value_))->~StringVector();
+        break;
+
     case VAR_VARIANTMAP:
         (reinterpret_cast<VariantMap*>(&value_))->~VariantMap();
         break;
@@ -509,19 +571,19 @@ void Variant::SetType(VariantType newType)
     case VAR_PTR:
         (reinterpret_cast<WeakPtr<RefCounted>*>(&value_))->~WeakPtr<RefCounted>();
         break;
-        
+
     case VAR_MATRIX3:
         delete reinterpret_cast<Matrix3*>(value_.ptr_);
         break;
-        
+
     case VAR_MATRIX3X4:
         delete reinterpret_cast<Matrix3x4*>(value_.ptr_);
         break;
-        
+
     case VAR_MATRIX4:
         delete reinterpret_cast<Matrix4*>(value_.ptr_);
         break;
-        
+
     default:
         break;
     }
@@ -550,6 +612,10 @@ void Variant::SetType(VariantType newType)
         new(reinterpret_cast<VariantVector*>(&value_)) VariantVector();
         break;
 
+    case VAR_STRINGVECTOR:
+        new(reinterpret_cast<StringVector*>(&value_)) StringVector();
+        break;
+
     case VAR_VARIANTMAP:
         new(reinterpret_cast<VariantMap*>(&value_)) VariantMap();
         break;
@@ -557,195 +623,205 @@ void Variant::SetType(VariantType newType)
     case VAR_PTR:
         new(reinterpret_cast<WeakPtr<RefCounted>*>(&value_)) WeakPtr<RefCounted>();
         break;
-        
+
     case VAR_MATRIX3:
         value_.ptr_ = new Matrix3();
         break;
-        
+
     case VAR_MATRIX3X4:
         value_.ptr_ = new Matrix3x4();
         break;
-        
+
     case VAR_MATRIX4:
         value_.ptr_ = new Matrix4();
         break;
-        
+
     default:
         break;
     }
 }
 
-template<> int Variant::Get<int>() const
+template <> int Variant::Get<int>() const
 {
     return GetInt();
 }
 
-template<> unsigned Variant::Get<unsigned>() const
+template <> unsigned Variant::Get<unsigned>() const
 {
     return GetUInt();
 }
 
-template<> StringHash Variant::Get<StringHash>() const
+template <> StringHash Variant::Get<StringHash>() const
 {
     return GetStringHash();
 }
 
-template<> bool Variant::Get<bool>() const
+template <> bool Variant::Get<bool>() const
 {
     return GetBool();
 }
 
-template<> float Variant::Get<float>() const
+template <> float Variant::Get<float>() const
 {
     return GetFloat();
 }
 
-template<> const Vector2& Variant::Get<const Vector2&>() const
+template <> double Variant::Get<double>() const
+{
+    return GetDouble();
+}
+
+template <> const Vector2& Variant::Get<const Vector2&>() const
 {
     return GetVector2();
 }
 
-template<> const Vector3& Variant::Get<const Vector3&>() const
+template <> const Vector3& Variant::Get<const Vector3&>() const
 {
     return GetVector3();
 }
 
-template<> const Vector4& Variant::Get<const Vector4&>() const
+template <> const Vector4& Variant::Get<const Vector4&>() const
 {
     return GetVector4();
 }
 
-template<> const Quaternion& Variant::Get<const Quaternion&>() const
+template <> const Quaternion& Variant::Get<const Quaternion&>() const
 {
     return GetQuaternion();
 }
 
-template<> const Color& Variant::Get<const Color&>() const
+template <> const Color& Variant::Get<const Color&>() const
 {
     return GetColor();
 }
 
-template<> const String& Variant::Get<const String&>() const
+template <> const String& Variant::Get<const String&>() const
 {
     return GetString();
 }
 
-template<> const IntRect& Variant::Get<const IntRect&>() const
+template <> const IntRect& Variant::Get<const IntRect&>() const
 {
     return GetIntRect();
 }
 
-template<> const IntVector2& Variant::Get<const IntVector2&>() const
+template <> const IntVector2& Variant::Get<const IntVector2&>() const
 {
     return GetIntVector2();
 }
 
-template<> const PODVector<unsigned char>& Variant::Get<const PODVector<unsigned char>& >() const
+template <> const PODVector<unsigned char>& Variant::Get<const PODVector<unsigned char>&>() const
 {
     return GetBuffer();
 }
 
-template<> void* Variant::Get<void*>() const
+template <> void* Variant::Get<void*>() const
 {
     return GetVoidPtr();
 }
 
-template<> RefCounted* Variant::Get<RefCounted*>() const
+template <> RefCounted* Variant::Get<RefCounted*>() const
 {
     return GetPtr();
 }
 
-template<> const Matrix3& Variant::Get<const Matrix3&>() const
+template <> const Matrix3& Variant::Get<const Matrix3&>() const
 {
     return GetMatrix3();
 }
 
-template<> const Matrix3x4& Variant::Get<const Matrix3x4&>() const
+template <> const Matrix3x4& Variant::Get<const Matrix3x4&>() const
 {
     return GetMatrix3x4();
 }
 
-template<> const Matrix4& Variant::Get<const Matrix4&>() const
+template <> const Matrix4& Variant::Get<const Matrix4&>() const
 {
     return GetMatrix4();
 }
 
-template<> ResourceRef Variant::Get<ResourceRef>() const
+template <> ResourceRef Variant::Get<ResourceRef>() const
 {
     return GetResourceRef();
 }
 
-template<> ResourceRefList Variant::Get<ResourceRefList>() const
+template <> ResourceRefList Variant::Get<ResourceRefList>() const
 {
     return GetResourceRefList();
 }
 
-template<> VariantVector Variant::Get<VariantVector>() const
+template <> VariantVector Variant::Get<VariantVector>() const
 {
     return GetVariantVector();
 }
 
-template<> VariantMap Variant::Get<VariantMap>() const
+template <> StringVector Variant::Get<StringVector >() const
+{
+    return GetStringVector();
+}
+
+template <> VariantMap Variant::Get<VariantMap>() const
 {
     return GetVariantMap();
 }
 
-template<> Vector2 Variant::Get<Vector2>() const
+template <> Vector2 Variant::Get<Vector2>() const
 {
     return GetVector2();
 }
 
-template<> Vector3 Variant::Get<Vector3>() const
+template <> Vector3 Variant::Get<Vector3>() const
 {
     return GetVector3();
 }
 
-template<> Vector4 Variant::Get<Vector4>() const
+template <> Vector4 Variant::Get<Vector4>() const
 {
     return GetVector4();
 }
 
-template<> Quaternion Variant::Get<Quaternion>() const
+template <> Quaternion Variant::Get<Quaternion>() const
 {
     return GetQuaternion();
 }
 
-template<> Color Variant::Get<Color>() const
+template <> Color Variant::Get<Color>() const
 {
     return GetColor();
 }
 
-template<> String Variant::Get<String>() const
+template <> String Variant::Get<String>() const
 {
     return GetString();
 }
 
-template<> IntRect Variant::Get<IntRect>() const
+template <> IntRect Variant::Get<IntRect>() const
 {
     return GetIntRect();
 }
 
-template<> IntVector2 Variant::Get<IntVector2>() const
+template <> IntVector2 Variant::Get<IntVector2>() const
 {
     return GetIntVector2();
 }
 
-template<> PODVector<unsigned char> Variant::Get<PODVector<unsigned char> >() const
+template <> PODVector<unsigned char> Variant::Get<PODVector<unsigned char> >() const
 {
     return GetBuffer();
 }
 
-template<> Matrix3 Variant::Get<Matrix3>() const
+template <> Matrix3 Variant::Get<Matrix3>() const
 {
     return GetMatrix3();
 }
 
-template<> Matrix3x4 Variant::Get<Matrix3x4>() const
+template <> Matrix3x4 Variant::Get<Matrix3x4>() const
 {
     return GetMatrix3x4();
 }
 
-template<> Matrix4 Variant::Get<Matrix4>() const
+template <> Matrix4 Variant::Get<Matrix4>() const
 {
     return GetMatrix4();
 }

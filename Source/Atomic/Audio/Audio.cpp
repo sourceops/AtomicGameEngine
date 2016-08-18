@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,21 +20,27 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Audio/Audio.h"
-#include "../Core/Context.h"
-#include "../Core/CoreEvents.h"
-#include "../IO/Log.h"
-#include "../Core/Mutex.h"
-#include "../Core/ProcessUtils.h"
-#include "../Core/Profiler.h"
 #include "../Audio/Sound.h"
 #include "../Audio/SoundListener.h"
 #include "../Audio/SoundSource3D.h"
+#include "../Core/Context.h"
+#include "../Core/CoreEvents.h"
+#include "../Core/ProcessUtils.h"
+#include "../Core/Profiler.h"
+#include "../IO/Log.h"
 
+// ATOMIC BEGIN
 #include <SDL/include/SDL.h>
+// ATOMIC END
 
 #include "../DebugNew.h"
+
+#ifdef _MSC_VER
+#pragma warning(disable:6293)
+#endif
 
 namespace Atomic
 {
@@ -44,9 +50,9 @@ const char* AUDIO_CATEGORY = "Audio";
 static const int MIN_BUFFERLENGTH = 20;
 static const int MIN_MIXRATE = 11025;
 static const int MAX_MIXRATE = 48000;
-static const StringHash SOUND_MASTER_HASH("MASTER");
+static const StringHash SOUND_MASTER_HASH("Master");
 
-static void SDLAudioCallback(void *userdata, Uint8 *stream, int len);
+static void SDLAudioCallback(void* userdata, Uint8* stream, int len);
 
 Audio::Audio(Context* context) :
     Object(context),
@@ -60,7 +66,7 @@ Audio::Audio(Context* context) :
     // Register Audio library object factories
     RegisterAudioLibrary(context_);
 
-    SubscribeToEvent(E_RENDERUPDATE, HANDLER(Audio, HandleRenderUpdate));
+    SubscribeToEvent(E_RENDERUPDATE, ATOMIC_HANDLER(Audio, HandleRenderUpdate));
 }
 
 Audio::~Audio()
@@ -80,33 +86,33 @@ bool Audio::SetMode(int bufferLengthMSec, int mixRate, bool stereo, bool interpo
 
     desired.freq = mixRate;
 
-// The concept behind the emspcripten audio port is to treat it as 16 bit until the final acumulation form the clip buffer
-#ifdef EMSCRIPTEN
+// The concept behind the emscripten audio port is to treat it as 16 bit until the final accumulation form the clip buffer
+#ifdef __EMSCRIPTEN__
     desired.format = AUDIO_F32LSB;
 #else
     desired.format = AUDIO_S16;
 #endif
-    desired.channels = stereo ? 2 : 1;
+    desired.channels = (Uint8)(stereo ? 2 : 1);
     desired.callback = SDLAudioCallback;
     desired.userdata = this;
 
     // SDL uses power of two audio fragments. Determine the closest match
     int bufferSamples = mixRate * bufferLengthMSec / 1000;
-    desired.samples = NextPowerOfTwo(bufferSamples);
+    desired.samples = (Uint16)NextPowerOfTwo((unsigned)bufferSamples);
     if (Abs((int)desired.samples / 2 - bufferSamples) < Abs((int)desired.samples - bufferSamples))
         desired.samples /= 2;
 
     deviceID_ = SDL_OpenAudioDevice(0, SDL_FALSE, &desired, &obtained, SDL_AUDIO_ALLOW_ANY_CHANGE);
     if (!deviceID_)
     {
-        LOGERROR("Could not initialize audio output");
+        ATOMIC_LOGERROR("Could not initialize audio output");
         return false;
     }
 
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
     if (obtained.format != AUDIO_F32LSB && obtained.format != AUDIO_F32MSB && obtained.format != AUDIO_F32SYS)
     {
-        LOGERROR("Could not initialize audio output, 32-bit float buffer format not supported");
+        ATOMIC_LOGERROR("Could not initialize audio output, 32-bit float buffer format not supported");
         SDL_CloseAudioDevice(deviceID_);
         deviceID_ = 0;
         return false;
@@ -114,7 +120,7 @@ bool Audio::SetMode(int bufferLengthMSec, int mixRate, bool stereo, bool interpo
 #else
     if (obtained.format != AUDIO_S16SYS && obtained.format != AUDIO_S16LSB && obtained.format != AUDIO_S16MSB)
     {
-        LOGERROR("Could not initialize audio output, 16-bit buffer format not supported");
+        ATOMIC_LOGERROR("Could not initialize audio output, 16-bit buffer format not supported");
         SDL_CloseAudioDevice(deviceID_);
         deviceID_ = 0;
         return false;
@@ -122,26 +128,25 @@ bool Audio::SetMode(int bufferLengthMSec, int mixRate, bool stereo, bool interpo
 #endif
 
     stereo_ = obtained.channels == 2;
-    sampleSize_ = stereo_ ? sizeof(int) : sizeof(short);
+    sampleSize_ = (unsigned)(stereo_ ? sizeof(int) : sizeof(short));
     // Guarantee a fragment size that is low enough so that Vorbis decoding buffers do not wrap
-    fragmentSize_ = Min((int)NextPowerOfTwo(mixRate >> 6), (int)obtained.samples);
+    fragmentSize_ = Min(NextPowerOfTwo((unsigned)(mixRate >> 6)), (unsigned)obtained.samples);
     mixRate_ = obtained.freq;
     interpolation_ = interpolation;
     clipBuffer_ = new int[stereo ? fragmentSize_ << 1 : fragmentSize_];
 
-    LOGINFO("Set audio mode " + String(mixRate_) + " Hz " + (stereo_ ? "stereo" : "mono") + " " +
-        (interpolation_ ? "interpolated" : ""));
+    ATOMIC_LOGINFO("Set audio mode " + String(mixRate_) + " Hz " + (stereo_ ? "stereo" : "mono") + " " +
+            (interpolation_ ? "interpolated" : ""));
 
     return Play();
 }
 
 void Audio::Update(float timeStep)
 {
-    PROFILE(UpdateAudio);
+    if (!playing_)
+        return;
 
-    // Update in reverse order, because sound sources might remove themselves
-    for (unsigned i = soundSources_.Size() - 1; i < soundSources_.Size(); --i)
-        soundSources_[i]->Update(timeStep);
+    UpdateInternal(timeStep);
 }
 
 bool Audio::Play()
@@ -151,11 +156,14 @@ bool Audio::Play()
 
     if (!deviceID_)
     {
-        LOGERROR("No audio mode set, can not start playback");
+        ATOMIC_LOGERROR("No audio mode set, can not start playback");
         return false;
     }
 
     SDL_PauseAudioDevice(deviceID_, 0);
+
+    // Update sound sources before resuming playback to make sure 3D positions are up to date
+    UpdateInternal(0.0f);
 
     playing_ = true;
     return true;
@@ -172,6 +180,27 @@ void Audio::SetMasterGain(const String& type, float gain)
 
     for (PODVector<SoundSource*>::Iterator i = soundSources_.Begin(); i != soundSources_.End(); ++i)
         (*i)->UpdateMasterGain();
+}
+
+void Audio::PauseSoundType(const String& type)
+{
+    pausedSoundTypes_.Insert(type);
+}
+
+void Audio::ResumeSoundType(const String& type)
+{
+    MutexLock lock(audioMutex_);
+    pausedSoundTypes_.Erase(type);
+    // Update sound sources before resuming playback to make sure 3D positions are up to date
+    // Done under mutex to ensure no mixing happens before we are ready
+    UpdateInternal(0.0f);
+}
+
+void Audio::ResumeAll()
+{
+    MutexLock lock(audioMutex_);
+    pausedSoundTypes_.Clear();
+    UpdateInternal(0.0f);
 }
 
 void Audio::SetListener(SoundListener* listener)
@@ -196,6 +225,11 @@ float Audio::GetMasterGain(const String& type) const
         return 1.0f;
 
     return findIt->second_.GetFloat();
+}
+
+bool Audio::IsSoundTypePaused(const String& type) const
+{
+    return pausedSoundTypes_.Contains(type);
 }
 
 SoundListener* Audio::GetListener() const
@@ -234,7 +268,7 @@ float Audio::GetSoundSourceMasterGain(StringHash typeHash) const
     return masterIt->second_.GetFloat() * typeIt->second_.GetFloat();
 }
 
-void SDLAudioCallback(void *userdata, Uint8* stream, int len)
+void SDLAudioCallback(void* userdata, Uint8* stream, int len)
 {
     Audio* audio = static_cast<Audio*>(userdata);
     {
@@ -243,7 +277,7 @@ void SDLAudioCallback(void *userdata, Uint8* stream, int len)
     }
 }
 
-void Audio::MixOutput(void *dest, unsigned samples)
+void Audio::MixOutput(void* dest, unsigned samples)
 {
     if (!playing_ || !clipBuffer_)
     {
@@ -254,7 +288,7 @@ void Audio::MixOutput(void *dest, unsigned samples)
     while (samples)
     {
         // If sample count exceeds the fragment (clip buffer) size, split the work
-        unsigned workSamples = Min((int)samples, (int)fragmentSize_);
+        unsigned workSamples = Min(samples, fragmentSize_);
         unsigned clipSamples = workSamples;
         if (stereo_)
             clipSamples <<= 1;
@@ -265,17 +299,27 @@ void Audio::MixOutput(void *dest, unsigned samples)
 
         // Mix samples to clip buffer
         for (PODVector<SoundSource*>::Iterator i = soundSources_.Begin(); i != soundSources_.End(); ++i)
-            (*i)->Mix(clipPtr, workSamples, mixRate_, stereo_, interpolation_);
+        {
+            SoundSource* source = *i;
 
+            // Check for pause if necessary
+            if (!pausedSoundTypes_.Empty())
+            {
+                if (pausedSoundTypes_.Contains(source->GetSoundType()))
+                    continue;
+            }
+
+            source->Mix(clipPtr, workSamples, mixRate_, stereo_, interpolation_);
+        }
         // Copy output from clip buffer to destination
-#ifdef EMSCRIPTEN
+#ifdef __EMSCRIPTEN__
         float* destPtr = (float*)dest;
         while (clipSamples--)
             *destPtr++ = (float)Clamp(*clipPtr++, -32768, 32767) / 32768.0f;
 #else
         short* destPtr = (short*)dest;
         while (clipSamples--)
-            *destPtr++ = Clamp(*clipPtr++, -32768, 32767);
+            *destPtr++ = (short)Clamp(*clipPtr++, -32768, 32767);
 #endif
         samples -= workSamples;
         ((unsigned char*&)dest) += sampleSize_ * SAMPLE_SIZE_MUL * workSamples;
@@ -298,6 +342,26 @@ void Audio::Release()
         SDL_CloseAudioDevice(deviceID_);
         deviceID_ = 0;
         clipBuffer_.Reset();
+    }
+}
+
+void Audio::UpdateInternal(float timeStep)
+{
+    ATOMIC_PROFILE(UpdateAudio);
+
+    // Update in reverse order, because sound sources might remove themselves
+    for (unsigned i = soundSources_.Size() - 1; i < soundSources_.Size(); --i)
+    {
+        SoundSource* source = soundSources_[i];
+
+        // Check for pause if necessary; do not update paused sound sources
+        if (!pausedSoundTypes_.Empty())
+        {
+            if (pausedSoundTypes_.Contains(source->GetSoundType()))
+                continue;
+        }
+
+        source->Update(timeStep);
     }
 }
 

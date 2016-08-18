@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,9 +30,9 @@ namespace Atomic
 {
 
 /// Work item completed event.
-EVENT(E_WORKITEMCOMPLETED, WorkItemCompleted)
+ATOMIC_EVENT(E_WORKITEMCOMPLETED, WorkItemCompleted)
 {
-    PARAM(P_ITEM, Item);                        // WorkItem ptr
+    ATOMIC_PARAM(P_ITEM, Item);                        // WorkItem ptr
 }
 
 class WorkerThread;
@@ -41,6 +41,8 @@ class WorkerThread;
 struct WorkItem : public RefCounted
 {
     friend class WorkQueue;
+
+    ATOMIC_REFCOUNTED(WorkItem)
 
 public:
     // Construct
@@ -51,9 +53,9 @@ public:
         pooled_(false)
     {
     }
-    
+
     /// Work function. Called with the work item and thread index (0 = main thread) as parameters.
-    void (*workFunction_)(const WorkItem*, unsigned);
+    void (* workFunction_)(const WorkItem*, unsigned);
     /// Data start pointer.
     void* start_;
     /// Data end pointer.
@@ -74,16 +76,16 @@ private:
 /// Work queue subsystem for multithreading.
 class ATOMIC_API WorkQueue : public Object
 {
-    OBJECT(WorkQueue);
-    
+    ATOMIC_OBJECT(WorkQueue, Object);
+
     friend class WorkerThread;
-    
+
 public:
     /// Construct.
     WorkQueue(Context* context);
     /// Destruct.
     ~WorkQueue();
-    
+
     /// Create worker threads. Can only be called once.
     void CreateThreads(unsigned numThreads);
     /// Get pointer to an usable WorkItem from the item pool. Allocate one if no more free items.
@@ -100,20 +102,27 @@ public:
     void Resume();
     /// Finish all queued work which has at least the specified priority. Main thread will also execute priority work. Pause worker threads if no more work remains.
     void Complete(unsigned priority);
+
     /// Set the pool telerance before it starts deleting pool items.
     void SetTolerance(int tolerance) { tolerance_ = tolerance; }
+
     /// Set how many milliseconds maximum per frame to spend on low-priority work, when there are no worker threads.
     void SetNonThreadedWorkMs(int ms) { maxNonThreadedWorkMs_ = Max(ms, 1); }
-    
+
     /// Return number of worker threads.
     unsigned GetNumThreads() const { return threads_.Size(); }
+
     /// Return whether all work with at least the specified priority is finished.
     bool IsCompleted(unsigned priority) const;
+    /// Return whether the queue is currently completing work in the main thread.
+    bool IsCompleting() const { return completing_; }
+
     /// Return the pool tolerance.
     int GetTolerance() const { return tolerance_; }
+
     /// Return how many milliseconds maximum to spend on non-threaded low-priority work.
     int GetNonThreadedWorkMs() const { return maxNonThreadedWorkMs_; }
-    
+
 private:
     /// Process work items until shut down. Called by the worker threads.
     void ProcessItems(unsigned threadIndex);
@@ -125,7 +134,7 @@ private:
     void ReturnToPool(SharedPtr<WorkItem>& item);
     /// Handle frame start event. Purge completed work from the main thread queue, and perform work if no threads at all.
     void HandleBeginFrame(StringHash eventType, VariantMap& eventData);
-    
+
     /// Worker threads.
     Vector<SharedPtr<WorkerThread> > threads_;
     /// Work item pool for reuse to cut down on allocation. The bool is a flag for item pooling and whether it is available or not.
@@ -142,6 +151,8 @@ private:
     volatile bool pausing_;
     /// Paused flag. Indicates the queue mutex being locked to prevent worker threads using up CPU time.
     bool paused_;
+    /// Completing work in the main thread flag.
+    bool completing_;
     /// Tolerance for the shared pool before it begins to deallocate.
     int tolerance_;
     /// Last size of the shared pool.

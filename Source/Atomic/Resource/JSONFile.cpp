@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,15 +20,17 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Container/ArrayPtr.h"
+#include "../Core/Profiler.h"
 #include "../Core/Context.h"
 #include "../IO/Deserializer.h"
-#include "../Resource/JSONFile.h"
 #include "../IO/Log.h"
-#include "../Core/Profiler.h"
+#include "../IO/MemoryBuffer.h"
+#include "../Resource/JSONFile.h"
 #include "../Resource/ResourceCache.h"
-#include "../IO/Serializer.h"
+
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/prettywriter.h>
@@ -41,15 +43,12 @@ namespace Atomic
 {
 
 JSONFile::JSONFile(Context* context) :
-    Resource(context),
-    document_(new Document())
+    Resource(context)
 {
 }
 
 JSONFile::~JSONFile()
 {
-    delete document_;
-    document_ = 0;
 }
 
 void JSONFile::RegisterObject(Context* context)
@@ -57,12 +56,69 @@ void JSONFile::RegisterObject(Context* context)
     context->RegisterFactory<JSONFile>();
 }
 
+// Convert rapidjson value to JSON value.
+static void ToJSONValue(JSONValue& jsonValue, const rapidjson::Value& rapidjsonValue)
+{
+    switch (rapidjsonValue.GetType())
+    {
+    case kNullType:
+        // Reset to null type
+        jsonValue.SetType(JSON_NULL);
+        break;
+
+    case kFalseType:
+        jsonValue = false;
+        break;
+
+    case kTrueType:
+        jsonValue = true;
+        break;
+
+    case kNumberType:
+        if (rapidjsonValue.IsInt())
+            jsonValue = rapidjsonValue.GetInt();
+        else if (rapidjsonValue.IsUint())
+            jsonValue = rapidjsonValue.GetUint();
+        else
+            jsonValue = rapidjsonValue.GetDouble();
+        break;
+
+    case kStringType:
+        jsonValue = rapidjsonValue.GetString();
+        break;
+
+    case kArrayType:
+        {
+            jsonValue.Resize(rapidjsonValue.Size());
+            for (unsigned i = 0; i < rapidjsonValue.Size(); ++i)
+            {
+                ToJSONValue(jsonValue[i], rapidjsonValue[i]);
+            }
+        }
+        break;
+
+    case kObjectType:
+        {
+            jsonValue.SetType(JSON_OBJECT);
+            for (rapidjson::Value::ConstMemberIterator i = rapidjsonValue.MemberBegin(); i != rapidjsonValue.MemberEnd(); ++i)
+            {
+                JSONValue& value = jsonValue[String(i->name.GetString())];
+                ToJSONValue(value, i->value);
+            }
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
 bool JSONFile::BeginLoad(Deserializer& source)
 {
     unsigned dataSize = source.GetSize();
     if (!dataSize && !source.GetName().Empty())
     {
-        LOGERROR("Zero sized JSON data in " + source.GetName());
+        ATOMIC_LOGERROR("Zero sized JSON data in " + source.GetName());
         return false;
     }
 
@@ -71,15 +127,89 @@ bool JSONFile::BeginLoad(Deserializer& source)
         return false;
     buffer[dataSize] = '\0';
 
-    if (document_->Parse<0>(buffer).HasParseError())
+    rapidjson::Document document;
+    if (document.Parse<0>(buffer).HasParseError())
     {
-        LOGERROR("Could not parse JSON data from " + source.GetName());
+        ATOMIC_LOGERROR("Could not parse JSON data from " + source.GetName());
         return false;
     }
+
+    ToJSONValue(root_, document);
 
     SetMemoryUse(dataSize);
 
     return true;
+}
+
+static void ToRapidjsonValue(rapidjson::Value& rapidjsonValue, const JSONValue& jsonValue, rapidjson::MemoryPoolAllocator<>& allocator)
+{
+    switch (jsonValue.GetValueType())
+    {
+    case JSON_NULL:
+        rapidjsonValue.SetNull();
+        break;
+
+    case JSON_BOOL:
+        rapidjsonValue.SetBool(jsonValue.GetBool());
+        break;
+
+    case JSON_NUMBER:
+        {
+            switch (jsonValue.GetNumberType())
+            {
+            case JSONNT_INT:
+                rapidjsonValue.SetInt(jsonValue.GetInt());
+                break;
+
+            case JSONNT_UINT:
+                rapidjsonValue.SetUint(jsonValue.GetUInt());
+                break;
+
+            default:
+                rapidjsonValue.SetDouble(jsonValue.GetDouble());
+                break;
+            }
+        }
+        break;
+
+    case JSON_STRING:
+        rapidjsonValue.SetString(jsonValue.GetCString(), allocator);
+        break;
+
+    case JSON_ARRAY:
+        {
+            const JSONArray& jsonArray = jsonValue.GetArray();
+
+            rapidjsonValue.SetArray();
+            rapidjsonValue.Reserve(jsonArray.Size(), allocator);
+
+            for (unsigned i = 0; i < jsonArray.Size(); ++i)
+            {
+                rapidjson::Value value;
+                rapidjsonValue.PushBack(value, allocator);
+                ToRapidjsonValue(rapidjsonValue[i], jsonArray[i], allocator);
+            }
+        }
+        break;
+
+    case JSON_OBJECT:
+        {
+            const JSONObject& jsonObject = jsonValue.GetObject();
+
+            rapidjsonValue.SetObject();
+            for (JSONObject::ConstIterator i = jsonObject.Begin(); i != jsonObject.End(); ++i)
+            {
+                const char* name = i->first_.CString();
+                rapidjson::Value value;
+                rapidjsonValue.AddMember(name, value, allocator);
+                ToRapidjsonValue(rapidjsonValue[name], i->second_, allocator);
+            }
+        }
+        break;
+
+    default:
+        break;
+    }
 }
 
 bool JSONFile::Save(Serializer& dest) const
@@ -89,38 +219,46 @@ bool JSONFile::Save(Serializer& dest) const
 
 bool JSONFile::Save(Serializer& dest, const String& indendation) const
 {
-    StringBuffer buffer;
-    PrettyWriter<StringBuffer> writer(buffer, &(document_->GetAllocator()));
-    writer.SetIndent(!indendation.Empty() ?  indendation.Front() : '\0', indendation.Length());
+    rapidjson::Document document;
+    ToRapidjsonValue(document, root_, document.GetAllocator());
 
-    document_->Accept(writer);
+    StringBuffer buffer;
+    PrettyWriter<StringBuffer> writer(buffer, &(document.GetAllocator()));
+    writer.SetIndent(!indendation.Empty() ? indendation.Front() : '\0', indendation.Length());
+
+    document.Accept(writer);
     unsigned size = (unsigned)buffer.GetSize();
     return dest.Write(buffer.GetString(), size) == size;
 }
 
-JSONValue JSONFile::CreateRoot(JSONValueType valueType)
+bool JSONFile::FromString(const String & source)
 {
-    if (valueType == JSON_OBJECT)
-        document_->SetObject();
-    else
-        document_->SetArray();
+    if (source.Empty())
+        return false;
 
-    return JSONValue(this, document_);
+    MemoryBuffer buffer(source.CString(), source.Length());
+    return Load(buffer);
 }
 
-JSONValue JSONFile::GetRoot(JSONValueType valueType)
-{
-    if (!document_)
-        return JSONValue::EMPTY;
+// ATOMIC BEGIN
 
-    if ((valueType == JSON_OBJECT && document_->GetType() != kObjectType) ||
-        (valueType == JSON_ARRAY && document_->GetType() != kArrayType))
+bool JSONFile::ParseJSON(const String& json, JSONValue& value, bool reportError)
+{
+    rapidjson::Document document;
+    if (document.Parse<0>(json.CString()).HasParseError())
     {
-        LOGERROR("Invalid root value type");
-        return JSONValue::EMPTY;
+        if (reportError)
+            ATOMIC_LOGERRORF("Could not parse JSON data from string with error: %s", document.GetParseError());
+
+        return false;
     }
 
-    return JSONValue(this, document_);
+    ToJSONValue(value, document);
+
+    return true;
+
 }
+
+// ATOMIC END
 
 }

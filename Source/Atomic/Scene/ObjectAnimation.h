@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,8 +22,8 @@
 
 #pragma once
 
-#include "../Scene/AnimationDefs.h"
 #include "../Resource/Resource.h"
+#include "../Scene/AnimationDefs.h"
 
 namespace Atomic
 {
@@ -31,11 +31,12 @@ namespace Atomic
 class ValueAnimation;
 class ValueAnimationInfo;
 class XMLElement;
+class JSONValue;
 
 /// Object animation class, an object animation include one or more attribute animations and theirs wrap mode and speed for an Animatable object.
 class ATOMIC_API ObjectAnimation : public Resource
 {
-    OBJECT(ObjectAnimation );
+    ATOMIC_OBJECT(ObjectAnimation, Resource);
 
 public:
     /// Construct.
@@ -53,9 +54,14 @@ public:
     bool LoadXML(const XMLElement& source);
     /// Save as XML data. Return true if successful.
     bool SaveXML(XMLElement& dest) const;
+    /// Load from JSON data. Return true if successful.
+    bool LoadJSON(const JSONValue& source);
+    /// Save as JSON data. Return true if successful.
+    bool SaveJSON(JSONValue& dest) const;
 
     /// Add attribute animation, attribute name can in following format: "attribute" or "#0/#1/attribute" or ""#0/#1/@component#1/attribute.
-    void AddAttributeAnimation(const String& name, ValueAnimation* attributeAnimation, WrapMode wrapMode = WM_LOOP, float speed = 1.0f);
+    void AddAttributeAnimation
+        (const String& name, ValueAnimation* attributeAnimation, WrapMode wrapMode = WM_LOOP, float speed = 1.0f);
     /// Remove attribute animation, attribute name can in following format: "attribute" or "#0/#1/attribute" or ""#0/#1/@component#1/attribute.
     void RemoveAttributeAnimation(const String& name);
     /// Remove attribute animation.
@@ -67,8 +73,10 @@ public:
     WrapMode GetAttributeAnimationWrapMode(const String& name) const;
     /// Return attribute animation speed by name.
     float GetAttributeAnimationSpeed(const String& name) const;
+
     /// Return all attribute animations infos.
     const HashMap<String, SharedPtr<ValueAnimationInfo> >& GetAttributeAnimationInfos() const { return attributeAnimationInfos_; }
+
     /// Return attribute animation info by name.
     ValueAnimationInfo* GetAttributeAnimationInfo(const String& name) const;
 

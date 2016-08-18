@@ -1,6 +1,24 @@
-// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include <Atomic/Atomic.h>
 #include <Atomic/IO/Log.h>
@@ -16,7 +34,7 @@
 namespace ToolCore
 {
 
-static String GetScriptType(JSBFunctionType* ftype)
+String JSBTypeScript::GetScriptType(JSBFunctionType* ftype)
 {
     String scriptType = "number";
 
@@ -32,13 +50,34 @@ static String GetScriptType(JSBFunctionType* ftype)
         scriptType = "string";
 
     if (ftype->type_->asEnumType())
-        scriptType = ftype->type_->asEnumType()->enum_->GetName();
+    {
+        JSBEnum* jenum = ftype->type_->asEnumType()->enum_;
 
-    if (ftype->type_->asEnumType())
-        scriptType = ftype->type_->asEnumType()->enum_->GetName();
+        scriptType = jenum->GetName();
+
+        if (jenum->GetPackage()->GetName() != package_->GetName())
+        {
+
+            scriptType =jenum->GetPackage()->GetName() + "." + scriptType;
+
+        }
+
+    }
 
     if (ftype->type_->asClassType())
-        scriptType = ftype->type_->asClassType()->class_->GetName();
+    {
+        JSBClass* klass = ftype->type_->asClassType()->class_;
+
+        scriptType = klass->GetName();
+
+        if (klass->GetPackage()->GetName() != package_->GetName())
+        {
+
+            scriptType = klass->GetPackage()->GetName() + "." + klass->GetName();
+
+        }
+
+    }
 
     if (ftype->type_->asVectorType())
     {
@@ -51,7 +90,17 @@ static String GetScriptType(JSBFunctionType* ftype)
 
 void JSBTypeScript::Begin()
 {
-    source_ += "//Atomic TypeScript Definitions\n\n\n";
+    source_ += "//////////////////////////////////////////////////////////\n";
+    source_ += "// IMPORTANT: THIS FILE IS GENERATED, CHANGES WILL BE LOST\n";
+    source_ += "//////////////////////////////////////////////////////////\n\n";
+
+    source_ += "// Atomic TypeScript Definitions\n\n";
+
+    if (package_->GetName() != "Atomic")
+    {
+        source_ += "/// <reference path=\"Atomic.d.ts\" />\n\n";
+    }
+
     source_ += "declare module "+ package_->GetName() + " {\n\n";
 }
 
@@ -76,9 +125,14 @@ void JSBTypeScript::ExportFunction(JSBFunction* function)
     }
 
     if (function->GetDocString().Length())
-        source_ += "      //" + function->GetDocString() + "\n";
+        source_ += "      /** " + function->GetDocString() + " */\n";
 
-    source_ += "      " + scriptName + "(";
+    source_ += "      ";
+
+    if (function->IsStatic())
+        source_ += "static ";
+
+    source_ += scriptName + "(";
 
     Vector<JSBFunctionType*>& parameters = function->GetParameters();
 
@@ -88,10 +142,16 @@ void JSBTypeScript::ExportFunction(JSBFunction* function)
 
         String scriptType = GetScriptType(ftype);
 
-        if (scriptType == "Context")
+        if (scriptType == "Context" || scriptType == "Atomic.Context")
             continue;
 
-        source_ += ftype->name_;
+        String name = ftype->name_;
+
+        // TS doesn't like arguments named arguments
+        if (name == "arguments")
+            name = "args";
+
+        source_ += name;
 
         if (ftype->initializer_.Length())
             source_ += "?";
@@ -117,12 +177,20 @@ void JSBTypeScript::ExportFunction(JSBFunction* function)
 
 }
 
+inline bool CompareJSBClassesByName(const SharedPtr<JSBClass>& lhs, const SharedPtr<JSBClass>& rhs)
+{
+    return lhs->GetName() < rhs->GetName();
+}
+
 void JSBTypeScript::ExportModuleClasses(JSBModule* module)
 {
     Vector<SharedPtr<JSBClass>> classes = module->GetClasses();
 
     if (!classes.Size())
         return;
+
+    // Sort classes to ensure consistent output across machines
+    Sort(classes.Begin(), classes.End(), CompareJSBClassesByName);
 
     source_ += "\n";
 
@@ -171,9 +239,7 @@ void JSBTypeScript::ExportModuleClasses(JSBModule* module)
                 continue;
 
             String scriptType = GetScriptType(ftype);
-
-            String scriptName =  propertyNames[j];
-            scriptName[0] = tolower(scriptName[0]);
+            String scriptName = prop->GetCasePropertyName();
 
             source_ += "      " + scriptName + ": " + scriptType + ";\n";
 
@@ -222,10 +288,14 @@ void JSBTypeScript::ExportModuleClasses(JSBModule* module)
 
 void JSBTypeScript::ExportModuleConstants(JSBModule* module)
 {
-    Vector<String>& constants = module->GetConstants();
+    // we're going to modify the vector, so copy the keys locally instead of using a reference
+    Vector<String> constants = module->GetConstants().Keys();
 
     if (!constants.Size())
         return;
+
+    // Sort constants to ensure consistent output across machines
+    Sort(constants.Begin(), constants.End());
 
     source_ += "\n";
 
@@ -240,30 +310,43 @@ void JSBTypeScript::ExportModuleConstants(JSBModule* module)
 
 }
 
+inline bool CompareJSBEnumsByName(const SharedPtr<JSBEnum>& lhs, const SharedPtr<JSBEnum>& rhs)
+{
+    return lhs->GetName() < rhs->GetName();
+}
+
 void JSBTypeScript::ExportModuleEnums(JSBModule* module)
 {
 
     Vector<SharedPtr<JSBEnum>> enums = module->GetEnums();
 
-    for (unsigned i = 0; i <enums.Size(); i++)
+    // Sort enums alphabetically to ensure consistent output across machines
+    Sort(enums.Begin(), enums.End(), CompareJSBEnumsByName);
+
+    Vector<SharedPtr<JSBEnum>>::Iterator enumIter;
+    for (enumIter = enums.Begin(); enumIter != enums.End(); enumIter++)
     {
-        JSBEnum* _enum =enums[i];
+        JSBEnum* _enum = *enumIter;
 
-        source_ += "   export enum " + _enum->GetName();
-        source_ += " {\n\n";
+        // can't use a TS enum, so use a type alias
 
-        Vector<String>& values = _enum->GetValues();
+        source_ += "\n   // enum " + _enum->GetName() + "\n";
+        source_ += "   export type " + _enum->GetName() + " = number;\n";
 
-        for (unsigned j = 0; j < values.Size(); j++)
+        HashMap<String, String>& values = _enum->GetValues();
+
+        HashMap<String, String>::ConstIterator valsIter = values.Begin();
+
+        while (valsIter != values.End())
         {
-            source_ += "      " + values[j];
-            if (j !=  values.Size() - 1)
-                source_ += ",\n";
+            String name = (*valsIter).first_;
+
+            source_ += "   export var " + name + ": " +  _enum->GetName() + ";\n";
+
+            valsIter++;
         }
 
-        source_ += "\n\n   }\n\n";
-
-
+        source_ += "\n";
 
     }
 
@@ -280,11 +363,19 @@ void JSBTypeScript::WriteToFile(const String &path)
 
 }
 
+inline bool CompareJSBModulesByName(const SharedPtr<JSBModule>& lhs, const SharedPtr<JSBModule>& rhs)
+{
+    return lhs->GetName() < rhs->GetName();
+}
+
 void JSBTypeScript::Emit(JSBPackage* package, const String& path)
 {
     package_ = package;
 
     Vector<SharedPtr<JSBModule>>& modules = package->GetModules();
+
+    // Sort modules alphabetically to ensure consistent output across machines
+    Sort(modules.Begin(), modules.End(), CompareJSBModulesByName);
 
     Begin();
 

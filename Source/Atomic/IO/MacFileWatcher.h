@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,6 +20,10 @@
 // THE SOFTWARE.
 //
 
+// ATOMIC BEGIN
+extern "C" {
+// ATOMIC END
+
 /// Return true when the running OS has the specified version number or later.
 bool CheckMinimalVersion(int major, int minor);
 
@@ -34,3 +38,7 @@ void CloseFileWatcher(void* watcher);
 
 /// Read changes queued by the file watcher.
 const char* ReadFileWatcher(void* watcher);
+
+// ATOMIC BEGIN
+}
+// ATOMIC END

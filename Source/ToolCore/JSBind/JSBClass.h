@@ -1,3 +1,24 @@
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #pragma once
 
@@ -13,6 +34,7 @@ namespace ToolCore
 
 class JSBPackage;
 class JSBFunction;
+class JSBFunctionType;
 class JSBType;
 
 // chosen function overrides
@@ -36,6 +58,7 @@ public:
 
 class JSBProperty
 {
+
 public:
     String name_;
     JSBFunction* getter_;
@@ -46,21 +69,59 @@ public:
 
     }
 
+    // returns proper case for property name
+    // based on whether the Getter/Setter is all caps
+    // GetMyValue -> myValue;
+    // GetGUID -> guid
+    // URLEnabled -> urlEnabled
+    String GetCasePropertyName()
+    {
+        if (!name_.Length())
+            return name_;
+
+        bool allUpper = true;
+
+        // TODO: https://github.com/AtomicGameEngine/AtomicGameEngine/issues/587
+        if (name_ == "URLEnabled")
+        {
+            return "urlEnabled";
+        }
+
+        for (unsigned k = 0; k < name_.Length(); k++)
+        {
+            if (!isupper(name_[k]))
+            {
+                allUpper = false;
+                break;
+            }
+        }
+
+        if (allUpper)
+        {
+            return name_.ToLower();
+        }
+
+        String name = name_;
+        name[0] = tolower(name[0]);
+        return name;
+    }
+
 };
 
 
 class JSBClass : public Object
 {
-    friend class JSBClassWriter;
+    friend class JSClassWriter;
+    friend class CSClassWriter;
 
-    OBJECT(JSBClass)
+    ATOMIC_OBJECT(JSBClass, Object)
 
 public:
 
     JSBClass(Context* context, JSBModule* module, const String& name, const String& nativeName);
     virtual ~JSBClass();
 
-    const String& GetName() { return name_; }
+    const String& GetName() const { return name_; }
     const String& GetNativeName() { return nativeName_; }
     JSBClass* GetBaseClass();
     PODVector<JSBClass*>& GetBaseClasses() {return baseClasses_; }
@@ -83,6 +144,8 @@ public:
         return properties_[name];
     }
 
+    JSBFunction* MatchFunction(JSBFunction* function, bool includeBases = false);
+    bool MatchProperty(JSBProperty* property, bool includeBases = false);
 
     JSBHeader* GetHeader() { return header_; }
     JSBModule* GetModule() { return module_; }
@@ -109,6 +172,10 @@ public:
     unsigned GetNumTypeScriptDecl() { return typeScriptDecls_.Size(); }
     const String& GetTypeScriptDecl(unsigned idx) { return typeScriptDecls_[idx]; }
 
+    void AddHaxeDecl(const String& decl) { haxeDecls_.Push(decl); }
+    unsigned GetNumHaxeDecl() { return haxeDecls_.Size(); }
+    const String& GetHaxeDecl(unsigned idx) { return haxeDecls_[idx]; }
+
     void Preprocess();
     void Process();
     void PostProcess();
@@ -132,6 +199,7 @@ private:
     PODVector<JSBFunctionSignature*> excludes_;
 
     Vector<String> typeScriptDecls_;
+    Vector<String> haxeDecls_;
 
     bool isAbstract_;
     bool isObject_;

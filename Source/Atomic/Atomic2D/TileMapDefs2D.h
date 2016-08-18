@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -29,9 +29,12 @@ namespace Atomic
 {
 
 class XMLElement;
+
+// ATOMIC BEGIN
 class TmxObjectGroup2D;
 class CollisionShape2D;
 class Node;
+// ATOMIC END
 
 /// Orientation.
 enum Orientation2D
@@ -41,10 +44,12 @@ enum Orientation2D
     /// Isometric.
     O_ISOMETRIC,
     /// Staggered.
-    O_STAGGERED
+    O_STAGGERED,
+    /// Hexagonal
+    O_HEXAGONAL
 };
 
-/// Tile map infomation.
+/// Tile map information.
 struct ATOMIC_API TileMapInfo2D
 {
     /// Orientation.
@@ -103,6 +108,7 @@ enum TileMapObjectType2D
 /// Property set.
 class ATOMIC_API PropertySet2D : public RefCounted
 {
+    ATOMIC_REFCOUNTED(PropertySet2D)
 public:
     PropertySet2D();
     virtual ~PropertySet2D();
@@ -122,22 +128,28 @@ protected:
 /// Tile define.
 class ATOMIC_API Tile2D : public RefCounted
 {
+    ATOMIC_REFCOUNTED(Tile2D)
+
 public:
     /// Construct.
     Tile2D();
 
     /// Return gid.
     int GetGid() const { return gid_; }
+
     /// Return sprite.
     Sprite2D* GetSprite() const;
-
-    /// Return Object Group.
-    TmxObjectGroup2D* GetObjectGroup() const;
-
     /// Return has property.
     bool HasProperty(const String& name) const;
     /// Return property.
     const String& GetProperty(const String& name) const;
+
+    // ATOMIC BEGIN
+
+    /// Return Object Group.
+    TmxObjectGroup2D* GetObjectGroup() const;
+
+    // ATOMIC END
 
 private:
     friend class TmxTileLayer2D;
@@ -148,33 +160,44 @@ private:
     SharedPtr<Sprite2D> sprite_;
     /// Property set.
     SharedPtr<PropertySet2D> propertySet_;
+
+    // ATOMIC BEGIN
     /// Object group (collision)
     SharedPtr<TmxObjectGroup2D> objectGroup_;
-
+    // ATOMIC END
 };
 
 /// Tile map object.
 class ATOMIC_API TileMapObject2D : public RefCounted
 {
+    ATOMIC_REFCOUNTED(TileMapObject2D)
+
 public:
     TileMapObject2D();
 
     /// Return type.
     TileMapObjectType2D GetObjectType() const { return objectType_; }
+
     /// Return name.
     const String& GetName() const { return name_; }
+
     /// Return type.
     const String& GetType() const { return type_; }
+
     /// Return position.
     const Vector2& GetPosition() const { return position_; }
+
     /// Return size (for rectangle and ellipse).
     const Vector2& GetSize() const { return size_; }
+
     /// Return number of points (use for script).
     unsigned GetNumPoints() const;
     /// Return point at index (use for script).
     const Vector2& GetPoint(unsigned index) const;
+
     /// Return tile Gid.
     int GetTileGid() const { return gid_; }
+
     /// Return tile sprite.
     Sprite2D* GetTileSprite() const;
     /// Return has property.
@@ -182,8 +205,10 @@ public:
     /// Return property value.
     const String& GetProperty(const String& name) const;
 
+    // ATOMIC BEGIN
     bool ValidCollisionShape() const;
     CollisionShape2D* CreateCollisionShape(Node* node) const;
+    // ATOMIC END
 
 private:
     friend class TmxObjectGroup2D;

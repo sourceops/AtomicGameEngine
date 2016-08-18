@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,21 +20,24 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
-#include "../Graphics/Graphics.h"
-#include "../IO/Log.h"
-#include "../Graphics/Technique.h"
 #include "../Core/ProcessUtils.h"
 #include "../Core/Profiler.h"
-#include "../Resource/ResourceCache.h"
+#include "../Graphics/Graphics.h"
+#include "../Graphics/Technique.h"
 #include "../Graphics/ShaderVariation.h"
+#include "../IO/Log.h"
+#include "../Resource/ResourceCache.h"
 #include "../Resource/XMLFile.h"
 
 #include "../DebugNew.h"
 
 namespace Atomic
 {
+
+extern const char* cullModeNames[];
 
 const char* blendModeNames[] =
 {
@@ -72,6 +75,7 @@ static const char* lightingModeNames[] =
 
 Pass::Pass(const String& name) :
     blendMode_(BLEND_REPLACE),
+    cullMode_(MAX_CULLMODES),
     depthTestMode_(CMP_LESSEQUAL),
     lightingMode_(LIGHTING_UNLIT),
     shadersLoadedFrameNumber_(0),
@@ -97,6 +101,11 @@ Pass::~Pass()
 void Pass::SetBlendMode(BlendMode mode)
 {
     blendMode_ = mode;
+}
+
+void Pass::SetCullMode(CullMode mode)
+{
+    cullMode_ = mode;
 }
 
 void Pass::SetDepthTestMode(CompareMode mode)
@@ -173,11 +182,11 @@ Technique::Technique(Context* context) :
     Resource(context),
     isDesktop_(false)
 {
-    #ifdef DESKTOP_GRAPHICS
+#ifdef DESKTOP_GRAPHICS
     desktopSupport_ = true;
-    #else
+#else
     desktopSupport_ = false;
-    #endif
+#endif
 }
 
 Technique::~Technique()
@@ -194,15 +203,15 @@ bool Technique::BeginLoad(Deserializer& source)
     passes_.Clear();
 
     SetMemoryUse(sizeof(Technique));
-    
+
     SharedPtr<XMLFile> xml(new XMLFile(context_));
     if (!xml->Load(source))
         return false;
-    
+
     XMLElement rootElem = xml->GetRoot();
     if (rootElem.HasAttribute("desktop"))
         isDesktop_ = rootElem.GetBool("desktop");
-    
+
     String globalVS = rootElem.GetAttribute("vs");
     String globalPS = rootElem.GetAttribute("ps");
     String globalVSDefines = rootElem.GetAttribute("vsdefines");
@@ -215,7 +224,7 @@ bool Technique::BeginLoad(Deserializer& source)
     bool globalAlphaMask = false;
     if (rootElem.HasAttribute("alphamask"))
         globalAlphaMask = rootElem.GetBool("alphamask");
-    
+
     XMLElement passElem = rootElem.GetChild("pass");
     while (passElem)
     {
@@ -225,7 +234,7 @@ bool Technique::BeginLoad(Deserializer& source)
 
             if (passElem.HasAttribute("desktop"))
                 newPass->SetIsDesktop(passElem.GetBool("desktop"));
-            
+
             // Append global defines only when pass does not redefine the shader
             if (passElem.HasAttribute("vs"))
             {
@@ -247,20 +256,26 @@ bool Technique::BeginLoad(Deserializer& source)
                 newPass->SetPixelShader(globalPS);
                 newPass->SetPixelShaderDefines(globalPSDefines + passElem.GetAttribute("psdefines"));
             }
-            
+
             if (passElem.HasAttribute("lighting"))
             {
                 String lighting = passElem.GetAttributeLower("lighting");
                 newPass->SetLightingMode((PassLightingMode)GetStringListIndex(lighting.CString(), lightingModeNames,
                     LIGHTING_UNLIT));
             }
-            
+
             if (passElem.HasAttribute("blend"))
             {
                 String blend = passElem.GetAttributeLower("blend");
                 newPass->SetBlendMode((BlendMode)GetStringListIndex(blend.CString(), blendModeNames, BLEND_REPLACE));
             }
-            
+
+            if (passElem.HasAttribute("cull"))
+            {
+                String cull = passElem.GetAttributeLower("cull");
+                newPass->SetCullMode((CullMode)GetStringListIndex(cull.CString(), cullModeNames, MAX_CULLMODES));
+            }
+
             if (passElem.HasAttribute("depthtest"))
             {
                 String depthTest = passElem.GetAttributeLower("depthtest");
@@ -269,21 +284,21 @@ bool Technique::BeginLoad(Deserializer& source)
                 else
                     newPass->SetDepthTestMode((CompareMode)GetStringListIndex(depthTest.CString(), compareModeNames, CMP_LESS));
             }
-            
+
             if (passElem.HasAttribute("depthwrite"))
                 newPass->SetDepthWrite(passElem.GetBool("depthwrite"));
-            
+
             if (passElem.HasAttribute("alphamask"))
                 newPass->SetAlphaMask(passElem.GetBool("alphamask"));
             else
                 newPass->SetAlphaMask(globalAlphaMask);
         }
         else
-            LOGERROR("Missing pass name");
-        
+            ATOMIC_LOGERROR("Missing pass name");
+
         passElem = passElem.GetNext("pass");
     }
-    
+
     return true;
 }
 
@@ -302,20 +317,49 @@ void Technique::ReleaseShaders()
     }
 }
 
+SharedPtr<Technique> Technique::Clone(const String& cloneName) const
+{
+    SharedPtr<Technique> ret(new Technique(context_));
+    ret->SetIsDesktop(isDesktop_);
+    ret->SetName(cloneName);
+
+    // Deep copy passes
+    for (Vector<SharedPtr<Pass> >::ConstIterator i = passes_.Begin(); i != passes_.End(); ++i)
+    {
+        Pass* srcPass = i->Get();
+        if (!srcPass)
+            continue;
+
+        Pass* newPass = ret->CreatePass(srcPass->GetName());
+        newPass->SetBlendMode(srcPass->GetBlendMode());
+        newPass->SetDepthTestMode(srcPass->GetDepthTestMode());
+        newPass->SetLightingMode(srcPass->GetLightingMode());
+        newPass->SetDepthWrite(srcPass->GetDepthWrite());
+        newPass->SetAlphaMask(srcPass->GetAlphaMask());
+        newPass->SetIsDesktop(srcPass->IsDesktop());
+        newPass->SetVertexShader(srcPass->GetVertexShader());
+        newPass->SetPixelShader(srcPass->GetPixelShader());
+        newPass->SetVertexShaderDefines(srcPass->GetVertexShaderDefines());
+        newPass->SetPixelShaderDefines(srcPass->GetPixelShaderDefines());
+    }
+
+    return ret;
+}
+
 Pass* Technique::CreatePass(const String& name)
 {
     Pass* oldPass = GetPass(name);
     if (oldPass)
         return oldPass;
-    
+
     SharedPtr<Pass> newPass(new Pass(name));
     unsigned passIndex = newPass->GetIndex();
     if (passIndex >= passes_.Size())
         passes_.Resize(passIndex + 1);
     passes_[passIndex] = newPass;
-    
+
     // Calculate memory use now
-    SetMemoryUse(sizeof(Technique) + GetNumPasses() * sizeof(Pass));
+    SetMemoryUse((unsigned)(sizeof(Technique) + GetNumPasses() * sizeof(Pass)));
 
     return newPass;
 }
@@ -328,7 +372,7 @@ void Technique::RemovePass(const String& name)
     else if (i->second_ < passes_.Size() && passes_[i->second_].Get())
     {
         passes_[i->second_].Reset();
-        SetMemoryUse(sizeof(Technique) + GetNumPasses() * sizeof(Pass));
+        SetMemoryUse((unsigned)(sizeof(Technique) + GetNumPasses() * sizeof(Pass)));
     }
 }
 

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +20,10 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
-#include "../Atomic2D/ConstraintPrismatic2D.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
+#include "../Atomic2D/ConstraintPrismatic2D.h"
 #include "../Atomic2D/PhysicsUtils2D.h"
 #include "../Atomic2D/RigidBody2D.h"
 
@@ -30,6 +31,8 @@
 
 namespace Atomic
 {
+
+extern const char* ATOMIC2D_CATEGORY;
 
 ConstraintPrismatic2D::ConstraintPrismatic2D(Context* context) :
     Constraint2D(context),
@@ -39,24 +42,25 @@ ConstraintPrismatic2D::ConstraintPrismatic2D(Context* context) :
 }
 
 ConstraintPrismatic2D::~ConstraintPrismatic2D()
-{    
+{
 }
 
 void ConstraintPrismatic2D::RegisterObject(Context* context)
 {
-    context->RegisterFactory<ConstraintPrismatic2D>();
-    
-    ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Anchor", GetAnchor, SetAnchor, Vector2, Vector2::ZERO, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Axis", GetAxis, SetAxis, Vector2, Vector2::RIGHT, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Enable Limit", GetEnableLimit, SetEnableLimit, bool, false, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Lower translation", GetLowerTranslation, SetLowerTranslation, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Upper translation", GetUpperTranslation, SetUpperTranslation, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Enable Motor", GetEnableMotor, SetEnableMotor, bool, false, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Max Motor Force", GetMaxMotorForce, SetMaxMotorForce, float, 2.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Motor Speed", GetMotorSpeed, SetMotorSpeed, float, 0.7f, AM_DEFAULT);
-    COPY_BASE_ATTRIBUTES(Constraint2D);
+    context->RegisterFactory<ConstraintPrismatic2D>(ATOMIC2D_CATEGORY);
+
+    ATOMIC_ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Anchor", GetAnchor, SetAnchor, Vector2, Vector2::ZERO, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Axis", GetAxis, SetAxis, Vector2, Vector2::RIGHT, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Enable Limit", GetEnableLimit, SetEnableLimit, bool, false, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Lower translation", GetLowerTranslation, SetLowerTranslation, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Upper translation", GetUpperTranslation, SetUpperTranslation, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Enable Motor", GetEnableMotor, SetEnableMotor, bool, false, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Max Motor Force", GetMaxMotorForce, SetMaxMotorForce, float, 2.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Motor Speed", GetMotorSpeed, SetMotorSpeed, float, 0.7f, AM_DEFAULT);
+    ATOMIC_COPY_BASE_ATTRIBUTES(Constraint2D);
 }
+
 void ConstraintPrismatic2D::SetAnchor(const Vector2& anchor)
 {
     if (anchor == anchor_)

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,12 +20,13 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
-#include "../Graphics/Camera.h"
-#include "../IO/Log.h"
-#include "../Graphics/OcclusionBuffer.h"
+#include "../Precompiled.h"
 
-#include <cstring>
+#include "../Core/WorkQueue.h"
+#include "../Core/Profiler.h"
+#include "../Graphics/Camera.h"
+#include "../Graphics/OcclusionBuffer.h"
+#include "../IO/Log.h"
 
 #include "../DebugNew.h"
 
@@ -39,9 +40,15 @@ static const unsigned CLIPMASK_Y_NEG = 0x8;
 static const unsigned CLIPMASK_Z_POS = 0x10;
 static const unsigned CLIPMASK_Z_NEG = 0x20;
 
+void DrawOcclusionBatchWork(const WorkItem* item, unsigned threadIndex)
+{
+    OcclusionBuffer* buffer = reinterpret_cast<OcclusionBuffer*>(item->aux_);
+    OcclusionBatch& batch = *reinterpret_cast<OcclusionBatch*>(item->start_);
+    buffer->DrawBatch(batch, threadIndex);
+}
+
 OcclusionBuffer::OcclusionBuffer(Context* context) :
     Object(context),
-    buffer_(0),
     width_(0),
     height_(0),
     numTriangles_(0),
@@ -58,47 +65,56 @@ OcclusionBuffer::~OcclusionBuffer()
 {
 }
 
-bool OcclusionBuffer::SetSize(int width, int height)
+bool OcclusionBuffer::SetSize(int width, int height, bool threaded)
 {
     // Force the height to an even amount of pixels for better mip generation
     if (height & 1)
         ++height;
-    
+
     if (width == width_ && height == height_)
         return true;
-    
+
     if (width <= 0 || height <= 0)
         return false;
-    
-    if (!IsPowerOfTwo(width))
+
+    if (!IsPowerOfTwo((unsigned)width))
     {
-        LOGERROR("Width is not a power of two");
+        ATOMIC_LOGERRORF("Requested occlusion buffer width %d is not a power of two", width);
         return false;
     }
-    
+
     width_ = width;
     height_ = height;
-    
-    // Reserve extra memory in case 3D clipping is not exact
-    fullBuffer_ = new int[width * (height + 2) + 2];
-    buffer_ = fullBuffer_.Get() + width + 1;
+
+    // Build work buffers for threading
+    unsigned numThreadBuffers = threaded ? GetSubsystem<WorkQueue>()->GetNumThreads() + 1 : 1;
+    buffers_.Resize(numThreadBuffers);
+    for (unsigned i = 0; i < numThreadBuffers; ++i)
+    {
+        // Reserve extra memory in case 3D clipping is not exact
+        OcclusionBufferData& buffer = buffers_[i];
+        buffer.dataWithSafety_ = new int[width * (height + 2) + 2];
+        buffer.data_ = buffer.dataWithSafety_.Get() + width + 1;
+        buffer.used_ = false;
+    }
+
     mipBuffers_.Clear();
-    
+
     // Build buffers for mip levels
     for (;;)
     {
         width = (width + 1) / 2;
         height = (height + 1) / 2;
-        
+
         mipBuffers_.Push(SharedArrayPtr<DepthValue>(new DepthValue[width * height]));
-        
+
         if (width <= OCCLUSION_MIN_SIZE && height <= OCCLUSION_MIN_SIZE)
             break;
     }
-    
-    LOGDEBUG("Set occlusion buffer size " + String(width_) + "x" + String(height_) + " with " + 
-        String(mipBuffers_.Size()) + " mip levels");
-    
+
+    ATOMIC_LOGDEBUG("Set occlusion buffer size " + String(width_) + "x" + String(height_) + " with " +
+             String(mipBuffers_.Size()) + " mip levels and " + String(numThreadBuffers) + " thread buffers");
+
     CalculateViewport();
     return true;
 }
@@ -107,7 +123,7 @@ void OcclusionBuffer::SetView(Camera* camera)
 {
     if (!camera)
         return;
-    
+
     view_ = camera->GetView();
     projection_ = camera->GetProjection(false);
     viewProj_ = projection_ * view_;
@@ -137,121 +153,98 @@ void OcclusionBuffer::SetCullMode(CullMode mode)
 void OcclusionBuffer::Reset()
 {
     numTriangles_ = 0;
+    batches_.Clear();
 }
 
 void OcclusionBuffer::Clear()
 {
-    if (!buffer_)
-        return;
-    
     Reset();
-    
-    int* dest = buffer_;
-    int count = width_ * height_;
-    
-    while (count--)
-        *dest++ = 0x7fffffff;
-    
+
+    // Only clear the main thread buffer. Rest are cleared on-demand when drawing the first batch
+    ClearBuffer(0);
+    for (unsigned i = 1; i < buffers_.Size(); ++i)
+        buffers_[i].used_ = false;
+
     depthHierarchyDirty_ = true;
 }
 
-bool OcclusionBuffer::Draw(const Matrix3x4& model, const void* vertexData, unsigned vertexSize, unsigned vertexStart, unsigned vertexCount)
+bool OcclusionBuffer::AddTriangles(const Matrix3x4& model, const void* vertexData, unsigned vertexSize, unsigned vertexStart,
+    unsigned vertexCount)
 {
-    const unsigned char* srcData = ((const unsigned char*)vertexData) + vertexStart * vertexSize;
-    
-    Matrix4 modelViewProj = viewProj_ * model;
-    depthHierarchyDirty_ = true;
-    
-    // Theoretical max. amount of vertices if each of the 6 clipping planes doubles the triangle count
-    Vector4 vertices[64 * 3];
-    
-    // 16-bit indices
-    unsigned index = 0;
-    while (index + 2 < vertexCount)
-    {
-        if (numTriangles_ >= maxTriangles_)
-            return false;
-        
-        const Vector3& v0 = *((const Vector3*)(&srcData[index * vertexSize]));
-        const Vector3& v1 = *((const Vector3*)(&srcData[(index + 1) * vertexSize]));
-        const Vector3& v2 = *((const Vector3*)(&srcData[(index + 2) * vertexSize]));
-        
-        vertices[0] = ModelTransform(modelViewProj, v0);
-        vertices[1] = ModelTransform(modelViewProj, v1);
-        vertices[2] = ModelTransform(modelViewProj, v2);
-        DrawTriangle(vertices);
-        
-        index += 3;
-    }
-    
-    return true;
+    batches_.Resize(batches_.Size() + 1);
+    OcclusionBatch& batch = batches_.Back();
+
+    batch.model_ = model;
+    batch.vertexData_ = vertexData;
+    batch.vertexSize_ = vertexSize;
+    batch.indexData_ = 0;
+    batch.indexSize_ = 0;
+    batch.drawStart_ = vertexStart;
+    batch.drawCount_ = vertexCount;
+
+    numTriangles_ += vertexCount / 3;
+    return numTriangles_ <= maxTriangles_;
 }
 
-bool OcclusionBuffer::Draw(const Matrix3x4& model, const void* vertexData, unsigned vertexSize, const void* indexData,
+bool OcclusionBuffer::AddTriangles(const Matrix3x4& model, const void* vertexData, unsigned vertexSize, const void* indexData,
     unsigned indexSize, unsigned indexStart, unsigned indexCount)
 {
-    const unsigned char* srcData = (const unsigned char*)vertexData;
-    
-    Matrix4 modelViewProj = viewProj_ * model;
-    depthHierarchyDirty_ = true;
-    
-    // Theoretical max. amount of vertices if each of the 6 clipping planes doubles the triangle count
-    Vector4 vertices[64 * 3];
-    
-    // 16-bit indices
-    if (indexSize == sizeof(unsigned short))
+    batches_.Resize(batches_.Size() + 1);
+    OcclusionBatch& batch = batches_.Back();
+
+    batch.model_ = model;
+    batch.vertexData_ = vertexData;
+    batch.vertexSize_ = vertexSize;
+    batch.indexData_ = indexData;
+    batch.indexSize_ = indexSize;
+    batch.drawStart_ = indexStart;
+    batch.drawCount_ = indexCount;
+
+    numTriangles_ += indexCount / 3;
+    return numTriangles_ <= maxTriangles_;
+}
+
+void OcclusionBuffer::DrawTriangles()
+{
+    if (buffers_.Size() == 1)
     {
-        const unsigned short* indices = ((const unsigned short*)indexData) + indexStart;
-        const unsigned short* indicesEnd = indices + indexCount;
-        
-        while (indices < indicesEnd)
-        {
-            if (numTriangles_ >= maxTriangles_)
-                return false;
-            
-            const Vector3& v0 = *((const Vector3*)(&srcData[indices[0] * vertexSize]));
-            const Vector3& v1 = *((const Vector3*)(&srcData[indices[1] * vertexSize]));
-            const Vector3& v2 = *((const Vector3*)(&srcData[indices[2] * vertexSize]));
-            
-            vertices[0] = ModelTransform(modelViewProj, v0);
-            vertices[1] = ModelTransform(modelViewProj, v1);
-            vertices[2] = ModelTransform(modelViewProj, v2);
-            DrawTriangle(vertices);
-            
-            indices += 3;
-        }
+        // Not threaded
+        for (Vector<OcclusionBatch>::Iterator i = batches_.Begin(); i != batches_.End(); ++i)
+            DrawBatch(*i, 0);
+
+        depthHierarchyDirty_ = true;
     }
-    else
+    else if (buffers_.Size() > 1)
     {
-        const unsigned* indices = ((const unsigned*)indexData) + indexStart;
-        const unsigned* indicesEnd = indices + indexCount;
-        
-        while (indices < indicesEnd)
+        // Threaded
+        WorkQueue* queue = GetSubsystem<WorkQueue>();
+
+        for (Vector<OcclusionBatch>::Iterator i = batches_.Begin(); i != batches_.End(); ++i)
         {
-            if (numTriangles_ >= maxTriangles_)
-                return false;
-            
-            const Vector3& v0 = *((const Vector3*)(&srcData[indices[0] * vertexSize]));
-            const Vector3& v1 = *((const Vector3*)(&srcData[indices[1] * vertexSize]));
-            const Vector3& v2 = *((const Vector3*)(&srcData[indices[2] * vertexSize]));
-            
-            vertices[0] = ModelTransform(modelViewProj, v0);
-            vertices[1] = ModelTransform(modelViewProj, v1);
-            vertices[2] = ModelTransform(modelViewProj, v2);
-            DrawTriangle(vertices);
-            
-            indices += 3;
+            SharedPtr<WorkItem> item = queue->GetFreeItem();
+            item->priority_ = M_MAX_UNSIGNED;
+            item->workFunction_ = DrawOcclusionBatchWork;
+            item->aux_ = this;
+            item->start_ = &(*i);
+            queue->AddWorkItem(item);
         }
+
+        queue->Complete(M_MAX_UNSIGNED);
+
+        MergeBuffers();
+        depthHierarchyDirty_ = true;
     }
-    
-    return true;
+
+    batches_.Clear();
 }
 
 void OcclusionBuffer::BuildDepthHierarchy()
 {
-    if (!buffer_)
+    if (buffers_.Empty() || !depthHierarchyDirty_)
         return;
-    
+
+    ATOMIC_PROFILE(BuildDepthHierarchy);
+
     // Build the first mip level from the pixel-level data
     int width = (width_ + 1) / 2;
     int height = (height_ + 1) / 2;
@@ -259,10 +252,10 @@ void OcclusionBuffer::BuildDepthHierarchy()
     {
         for (int y = 0; y < height; ++y)
         {
-            int* src = buffer_ + (y * 2) * width_;
+            int* src = buffers_[0].data_ + (y * 2) * width_;
             DepthValue* dest = mipBuffers_[0].Get() + y * width;
             DepthValue* end = dest + width;
-            
+
             if (y * 2 + 1 < height_)
             {
                 int* src2 = src + width_;
@@ -274,7 +267,7 @@ void OcclusionBuffer::BuildDepthHierarchy()
                     int maxUpper = Max(src[0], src[1]);
                     int maxLower = Max(src2[0], src2[1]);
                     dest->max_ = Max(maxUpper, maxLower);
-                    
+
                     src += 2;
                     src2 += 2;
                     ++dest;
@@ -286,14 +279,14 @@ void OcclusionBuffer::BuildDepthHierarchy()
                 {
                     dest->min_ = Min(src[0], src[1]);
                     dest->max_ = Max(src[0], src[1]);
-                    
+
                     src += 2;
                     ++dest;
                 }
             }
         }
     }
-    
+
     // Build the rest of the mip levels
     for (unsigned i = 1; i < mipBuffers_.Size(); ++i)
     {
@@ -301,13 +294,13 @@ void OcclusionBuffer::BuildDepthHierarchy()
         int prevHeight = height;
         width = (width + 1) / 2;
         height = (height + 1) / 2;
-        
+
         for (int y = 0; y < height; ++y)
         {
             DepthValue* src = mipBuffers_[i - 1].Get() + (y * 2) * prevWidth;
             DepthValue* dest = mipBuffers_[i].Get() + y * width;
             DepthValue* end = dest + width;
-            
+
             if (y * 2 + 1 < prevHeight)
             {
                 DepthValue* src2 = src + prevWidth;
@@ -319,7 +312,7 @@ void OcclusionBuffer::BuildDepthHierarchy()
                     int maxUpper = Max(src[0].max_, src[1].max_);
                     int maxLower = Max(src2[0].max_, src2[1].max_);
                     dest->max_ = Max(maxUpper, maxLower);
-                    
+
                     src += 2;
                     src2 += 2;
                     ++dest;
@@ -331,14 +324,14 @@ void OcclusionBuffer::BuildDepthHierarchy()
                 {
                     dest->min_ = Min(src[0].min_, src[1].min_);
                     dest->max_ = Max(src[0].max_, src[1].max_);
-                    
+
                     src += 2;
                     ++dest;
                 }
             }
         }
     }
-    
+
     depthHierarchyDirty_ = false;
 }
 
@@ -349,9 +342,9 @@ void OcclusionBuffer::ResetUseTimer()
 
 bool OcclusionBuffer::IsVisible(const BoundingBox& worldSpaceBox) const
 {
-    if (!buffer_)
+    if (buffers_.Empty())
         return true;
-    
+
     // Transform corners to projection space
     Vector4 vertices[8];
     vertices[0] = ModelTransform(viewProj_, worldSpaceBox.min_);
@@ -362,49 +355,49 @@ bool OcclusionBuffer::IsVisible(const BoundingBox& worldSpaceBox) const
     vertices[5] = ModelTransform(viewProj_, Vector3(worldSpaceBox.max_.x_, worldSpaceBox.min_.y_, worldSpaceBox.max_.z_));
     vertices[6] = ModelTransform(viewProj_, Vector3(worldSpaceBox.min_.x_, worldSpaceBox.max_.y_, worldSpaceBox.max_.z_));
     vertices[7] = ModelTransform(viewProj_, worldSpaceBox.max_);
-    
+
     // Apply a far clip relative bias
     for (unsigned i = 0; i < 8; ++i)
         vertices[i].z_ -= OCCLUSION_RELATIVE_BIAS;
-    
+
     // Transform to screen space. If any of the corners cross the near plane, assume visible
     float minX, maxX, minY, maxY, minZ;
-    
+
     if (vertices[0].z_ <= 0.0f)
         return true;
-    
+
     Vector3 projected = ViewportTransform(vertices[0]);
     minX = maxX = projected.x_;
     minY = maxY = projected.y_;
     minZ = projected.z_;
-    
+
     // Project the rest
     for (unsigned i = 1; i < 8; ++i)
     {
         if (vertices[i].z_ <= 0.0f)
             return true;
-        
+
         projected = ViewportTransform(vertices[i]);
-        
+
         if (projected.x_ < minX) minX = projected.x_;
         if (projected.x_ > maxX) maxX = projected.x_;
         if (projected.y_ < minY) minY = projected.y_;
         if (projected.y_ > maxY) maxY = projected.y_;
         if (projected.z_ < minZ) minZ = projected.z_;
     }
-    
+
     // Expand the bounding box 1 pixel in each direction to be conservative and correct rasterization offset
     IntRect rect(
         (int)(minX - 1.5f), (int)(minY - 1.5f),
         (int)(maxX + 0.5f), (int)(maxY + 0.5f)
     );
-    
+
     // If the rect is outside, let frustum culling handle
     if (rect.right_ < 0 || rect.bottom_ < 0)
         return true;
     if (rect.left_ >= width_ || rect.top_ >= height_)
         return true;
-    
+
     // Clipping of rect
     if (rect.left_ < 0)
         rect.left_ = 0;
@@ -414,10 +407,10 @@ bool OcclusionBuffer::IsVisible(const BoundingBox& worldSpaceBox) const
         rect.right_ = width_ - 1;
     if (rect.bottom_ >= height_)
         rect.bottom_ = height_ - 1;
-    
+
     // Convert depth to integer and apply final bias
     int z = (int)(minZ + 0.5f) - OCCLUSION_FIXED_BIAS;
-    
+
     if (!depthHierarchyDirty_)
     {
         // Start from lowest mip level and check if a conclusive result can be found
@@ -427,12 +420,12 @@ bool OcclusionBuffer::IsVisible(const BoundingBox& worldSpaceBox) const
             int width = width_ >> shift;
             int left = rect.left_ >> shift;
             int right = rect.right_ >> shift;
-            
+
             DepthValue* buffer = mipBuffers_[i].Get();
             DepthValue* row = buffer + (rect.top_ >> shift) * width;
             DepthValue* endRow = buffer + (rect.bottom_ >> shift) * width;
             bool allOccluded = true;
-            
+
             while (row <= endRow)
             {
                 DepthValue* src = row + left;
@@ -447,15 +440,15 @@ bool OcclusionBuffer::IsVisible(const BoundingBox& worldSpaceBox) const
                 }
                 row += width;
             }
-            
+
             if (allOccluded)
                 return false;
         }
     }
-    
+
     // If no conclusive result, finally check the pixel-level data
-    int* row = buffer_ + rect.top_ * width_;
-    int* endRow = buffer_ + rect.bottom_ * width_;
+    int* row = buffers_[0].data_ + rect.top_ * width_;
+    int* endRow = buffers_[0].data_ + rect.bottom_ * width_;
     while (row <= endRow)
     {
         int* src = row + rect.left_;
@@ -468,13 +461,93 @@ bool OcclusionBuffer::IsVisible(const BoundingBox& worldSpaceBox) const
         }
         row += width_;
     }
-    
+
     return false;
 }
 
 unsigned OcclusionBuffer::GetUseTimer()
 {
     return useTimer_.GetMSec(false);
+}
+
+
+void OcclusionBuffer::DrawBatch(const OcclusionBatch& batch, unsigned threadIndex)
+{
+    // If buffer not yet used, clear it
+    if (threadIndex > 0 && !buffers_[threadIndex].used_)
+    {
+        ClearBuffer(threadIndex);
+        buffers_[threadIndex].used_ = true;
+    }
+
+    Matrix4 modelViewProj = viewProj_ * batch.model_;
+
+    // Theoretical max. amount of vertices if each of the 6 clipping planes doubles the triangle count
+    Vector4 vertices[64 * 3];
+
+    if (!batch.indexData_)
+    {
+        const unsigned char* srcData = ((const unsigned char*)batch.vertexData_) + batch.drawStart_ * batch.vertexSize_;
+
+        unsigned index = 0;
+        while (index + 2 < batch.drawCount_)
+        {
+            const Vector3& v0 = *((const Vector3*)(&srcData[index * batch.vertexSize_]));
+            const Vector3& v1 = *((const Vector3*)(&srcData[(index + 1) * batch.vertexSize_]));
+            const Vector3& v2 = *((const Vector3*)(&srcData[(index + 2) * batch.vertexSize_]));
+
+            vertices[0] = ModelTransform(modelViewProj, v0);
+            vertices[1] = ModelTransform(modelViewProj, v1);
+            vertices[2] = ModelTransform(modelViewProj, v2);
+            DrawTriangle(vertices, threadIndex);
+
+            index += 3;
+        }
+    }
+    else
+    {
+        const unsigned char* srcData = (const unsigned char*)batch.vertexData_;
+
+        // 16-bit indices
+        if (batch.indexSize_ == sizeof(unsigned short))
+        {
+            const unsigned short* indices = ((const unsigned short*)batch.indexData_) + batch.drawStart_;
+            const unsigned short* indicesEnd = indices + batch.drawCount_;
+
+            while (indices < indicesEnd)
+            {
+                const Vector3& v0 = *((const Vector3*)(&srcData[indices[0] * batch.vertexSize_]));
+                const Vector3& v1 = *((const Vector3*)(&srcData[indices[1] * batch.vertexSize_]));
+                const Vector3& v2 = *((const Vector3*)(&srcData[indices[2] * batch.vertexSize_]));
+
+                vertices[0] = ModelTransform(modelViewProj, v0);
+                vertices[1] = ModelTransform(modelViewProj, v1);
+                vertices[2] = ModelTransform(modelViewProj, v2);
+                DrawTriangle(vertices, threadIndex);
+
+                indices += 3;
+            }
+        }
+        else
+        {
+            const unsigned* indices = ((const unsigned*)batch.indexData_) + batch.drawStart_;
+            const unsigned* indicesEnd = indices + batch.drawCount_;
+
+            while (indices < indicesEnd)
+            {
+                const Vector3& v0 = *((const Vector3*)(&srcData[indices[0] * batch.vertexSize_]));
+                const Vector3& v1 = *((const Vector3*)(&srcData[indices[1] * batch.vertexSize_]));
+                const Vector3& v2 = *((const Vector3*)(&srcData[indices[2] * batch.vertexSize_]));
+
+                vertices[0] = ModelTransform(modelViewProj, v0);
+                vertices[1] = ModelTransform(modelViewProj, v1);
+                vertices[2] = ModelTransform(modelViewProj, v2);
+                DrawTriangle(vertices, threadIndex);
+
+                indices += 3;
+            }
+        }
+    }
 }
 
 inline Vector4 OcclusionBuffer::ModelTransform(const Matrix4& transform, const Vector3& vertex) const
@@ -523,18 +596,18 @@ void OcclusionBuffer::CalculateViewport()
     projOffsetScaleY_ = projection_.m11_ * scaleY_;
 }
 
-void OcclusionBuffer::DrawTriangle(Vector4* vertices)
+void OcclusionBuffer::DrawTriangle(Vector4* vertices, unsigned threadIndex)
 {
     unsigned clipMask = 0;
     unsigned andClipMask = 0;
     bool drawOk = false;
     Vector3 projected[3];
-    
+
     // Build the clip plane mask for the triangle
     for (unsigned i = 0; i < 3; ++i)
     {
         unsigned vertexClipMask = 0;
-        
+
         if (vertices[i].x_ > vertices[i].w_)
             vertexClipMask |= CLIPMASK_X_POS;
         if (vertices[i].x_ < -vertices[i].w_)
@@ -547,41 +620,41 @@ void OcclusionBuffer::DrawTriangle(Vector4* vertices)
             vertexClipMask |= CLIPMASK_Z_POS;
         if (vertices[i].z_ < 0.0f)
             vertexClipMask |= CLIPMASK_Z_NEG;
-        
+
         clipMask |= vertexClipMask;
-        
+
         if (!i)
             andClipMask = vertexClipMask;
         else
             andClipMask &= vertexClipMask;
     }
-    
+
     // If triangle is fully behind any clip plane, can reject quickly
     if (andClipMask)
         return;
-    
+
     // Check if triangle is fully inside
     if (!clipMask)
     {
         projected[0] = ViewportTransform(vertices[0]);
         projected[1] = ViewportTransform(vertices[1]);
         projected[2] = ViewportTransform(vertices[2]);
-        
+
         bool clockwise = SignedArea(projected[0], projected[1], projected[2]) < 0.0f;
         if (cullMode_ == CULL_NONE || (cullMode_ == CULL_CCW && clockwise) || (cullMode_ == CULL_CW && !clockwise))
         {
-            DrawTriangle2D(projected, clockwise);
+            DrawTriangle2D(projected, clockwise, threadIndex);
             drawOk = true;
         }
     }
     else
     {
         bool triangles[64];
-        
+
         // Initial triangle
         triangles[0] = true;
         unsigned numTriangles = 1;
-        
+
         if (clipMask & CLIPMASK_X_POS)
             ClipVertices(Vector4(-1.0f, 0.0f, 0.0f, 1.0f), vertices, triangles, numTriangles);
         if (clipMask & CLIPMASK_X_NEG)
@@ -594,7 +667,7 @@ void OcclusionBuffer::DrawTriangle(Vector4* vertices)
             ClipVertices(Vector4(0.0f, 0.0f, -1.0f, 1.0f), vertices, triangles, numTriangles);
         if (clipMask & CLIPMASK_Z_NEG)
             ClipVertices(Vector4(0.0f, 0.0f, 1.0f, 0.0f), vertices, triangles, numTriangles);
-        
+
         // Draw each accepted triangle
         for (unsigned i = 0; i < numTriangles; ++i)
         {
@@ -604,17 +677,17 @@ void OcclusionBuffer::DrawTriangle(Vector4* vertices)
                 projected[0] = ViewportTransform(vertices[index]);
                 projected[1] = ViewportTransform(vertices[index + 1]);
                 projected[2] = ViewportTransform(vertices[index + 2]);
-                
+
                 bool clockwise = SignedArea(projected[0], projected[1], projected[2]) < 0.0f;
                 if (cullMode_ == CULL_NONE || (cullMode_ == CULL_CCW && clockwise) || (cullMode_ == CULL_CW && !clockwise))
                 {
-                    DrawTriangle2D(projected, clockwise);
+                    DrawTriangle2D(projected, clockwise, threadIndex);
                     drawOk = true;
                 }
             }
         }
     }
-    
+
     if (drawOk)
         ++numTriangles_;
 }
@@ -622,7 +695,7 @@ void OcclusionBuffer::DrawTriangle(Vector4* vertices)
 void OcclusionBuffer::ClipVertices(const Vector4& plane, Vector4* vertices, bool* triangles, unsigned& numTriangles)
 {
     unsigned num = numTriangles;
-    
+
     for (unsigned i = 0; i < num; ++i)
     {
         if (triangles[i])
@@ -631,7 +704,7 @@ void OcclusionBuffer::ClipVertices(const Vector4& plane, Vector4* vertices, bool
             float d0 = plane.DotProduct(vertices[index]);
             float d1 = plane.DotProduct(vertices[index + 1]);
             float d2 = plane.DotProduct(vertices[index + 2]);
-            
+
             // If all vertices behind the plane, reject triangle
             if (d0 < 0.0f && d1 < 0.0f && d2 < 0.0f)
             {
@@ -660,7 +733,7 @@ void OcclusionBuffer::ClipVertices(const Vector4& plane, Vector4* vertices, bool
                 unsigned newIdx = numTriangles * 3;
                 triangles[numTriangles] = true;
                 ++numTriangles;
-                
+
                 vertices[newIdx] = ClipEdge(vertices[index], vertices[index + 2], d0, d2);
                 vertices[newIdx + 1] = vertices[index] = ClipEdge(vertices[index], vertices[index + 1], d0, d1);
                 vertices[newIdx + 2] = vertices[index + 2];
@@ -670,7 +743,7 @@ void OcclusionBuffer::ClipVertices(const Vector4& plane, Vector4* vertices, bool
                 unsigned newIdx = numTriangles * 3;
                 triangles[numTriangles] = true;
                 ++numTriangles;
-                
+
                 vertices[newIdx + 1] = ClipEdge(vertices[index + 1], vertices[index], d1, d0);
                 vertices[newIdx + 2] = vertices[index + 1] = ClipEdge(vertices[index + 1], vertices[index + 2], d1, d2);
                 vertices[newIdx] = vertices[index];
@@ -680,7 +753,7 @@ void OcclusionBuffer::ClipVertices(const Vector4& plane, Vector4* vertices, bool
                 unsigned newIdx = numTriangles * 3;
                 triangles[numTriangles] = true;
                 ++numTriangles;
-                
+
                 vertices[newIdx + 2] = ClipEdge(vertices[index + 2], vertices[index + 1], d2, d1);
                 vertices[newIdx] = vertices[index + 2] = ClipEdge(vertices[index + 2], vertices[index], d2, d0);
                 vertices[newIdx + 1] = vertices[index + 1];
@@ -699,21 +772,21 @@ struct Gradients
     Gradients(const Vector3* vertices)
     {
         float invdX = 1.0f / (((vertices[1].x_ - vertices[2].x_) *
-            (vertices[0].y_ - vertices[2].y_)) -
-            ((vertices[0].x_ - vertices[2].x_) *
-            (vertices[1].y_ - vertices[2].y_)));
-        
+                               (vertices[0].y_ - vertices[2].y_)) -
+                              ((vertices[0].x_ - vertices[2].x_) *
+                               (vertices[1].y_ - vertices[2].y_)));
+
         float invdY = -invdX;
-        
+
         dInvZdX_ = invdX * (((vertices[1].z_ - vertices[2].z_) * (vertices[0].y_ - vertices[2].y_)) -
-            ((vertices[0].z_ - vertices[2].z_) * (vertices[1].y_ - vertices[2].y_)));
-        
+                            ((vertices[0].z_ - vertices[2].z_) * (vertices[1].y_ - vertices[2].y_)));
+
         dInvZdY_ = invdY * (((vertices[1].z_ - vertices[2].z_) * (vertices[0].x_ - vertices[2].x_)) -
-            ((vertices[0].z_ - vertices[2].z_) * (vertices[1].x_ - vertices[2].x_)));
-        
+                            ((vertices[0].z_ - vertices[2].z_) * (vertices[1].x_ - vertices[2].x_)));
+
         dInvZdXInt_ = (int)dInvZdX_;
     }
-    
+
     /// Integer horizontal gradient.
     int dInvZdXInt_;
     /// Horizontal gradient.
@@ -732,13 +805,13 @@ struct Edge
         float slope = (height != 0.0f) ? (bottom.x_ - top.x_) / height : 0.0f;
         float yPreStep = (float)(topY + 1) - top.y_;
         float xPreStep = slope * yPreStep;
-        
+
         x_ = (int)((xPreStep + top.x_) * OCCLUSION_X_SCALE + 0.5f);
         xStep_ = (int)(slope * OCCLUSION_X_SCALE + 0.5f);
         invZ_ = (int)(top.z_ + xPreStep * gradients.dInvZdX_ + yPreStep * gradients.dInvZdY_ + 0.5f);
         invZStep_ = (int)(slope * gradients.dInvZdX_ + gradients.dInvZdY_ + 0.5f);
     }
-    
+
     /// X coordinate.
     int x_;
     /// X coordinate step.
@@ -749,17 +822,19 @@ struct Edge
     int invZStep_;
 };
 
-void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
+void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise, unsigned threadIndex)
 {
     int top, middle, bottom;
     bool middleIsRight;
-    
+
     // Sort vertices in Y-direction
     if (vertices[0].y_ < vertices[1].y_)
     {
         if (vertices[2].y_ < vertices[0].y_)
         {
-            top = 2; middle = 0; bottom = 1;
+            top = 2;
+            middle = 0;
+            bottom = 1;
             middleIsRight = true;
         }
         else
@@ -767,12 +842,14 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
             top = 0;
             if (vertices[1].y_ < vertices[2].y_)
             {
-                middle = 1; bottom = 2;
+                middle = 1;
+                bottom = 2;
                 middleIsRight = true;
             }
             else
             {
-                middle = 2; bottom = 1;
+                middle = 2;
+                bottom = 1;
                 middleIsRight = false;
             }
         }
@@ -781,7 +858,9 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
     {
         if (vertices[2].y_ < vertices[1].y_)
         {
-            top = 2; middle = 1; bottom = 0;
+            top = 2;
+            middle = 1;
+            bottom = 0;
             middleIsRight = false;
         }
         else
@@ -789,12 +868,14 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
             top = 1;
             if (vertices[0].y_ < vertices[2].y_)
             {
-                middle = 0; bottom = 2;
+                middle = 0;
+                bottom = 2;
                 middleIsRight = false;
             }
             else
             {
-                middle = 2; bottom = 0;
+                middle = 2;
+                bottom = 0;
                 middleIsRight = true;
             }
         }
@@ -803,11 +884,11 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
     int topY = (int)vertices[top].y_;
     int middleY = (int)vertices[middle].y_;
     int bottomY = (int)vertices[bottom].y_;
-    
+
     // Check for degenerate triangle
     if (topY == bottomY)
         return;
-    
+
     // Reverse middleIsRight test if triangle is counterclockwise
     if (!clockwise)
         middleIsRight = !middleIsRight;
@@ -816,12 +897,14 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
     Edge topToMiddle(gradients, vertices[top], vertices[middle], topY);
     Edge topToBottom(gradients, vertices[top], vertices[bottom], topY);
     Edge middleToBottom(gradients, vertices[middle], vertices[bottom], middleY);
-    
+
+    int* bufferData = buffers_[threadIndex].data_;
+
     if (middleIsRight)
     {
         // Top half
-        int* row = buffer_ + topY * width_;
-        int* endRow = buffer_ + middleY * width_;
+        int* row = bufferData + topY * width_;
+        int* endRow = bufferData + middleY * width_;
         while (row < endRow)
         {
             int invZ = topToBottom.invZ_;
@@ -834,16 +917,16 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
                 invZ += gradients.dInvZdXInt_;
                 ++dest;
             }
-            
+
             topToBottom.x_ += topToBottom.xStep_;
             topToBottom.invZ_ += topToBottom.invZStep_;
             topToMiddle.x_ += topToMiddle.xStep_;
             row += width_;
         }
-        
+
         // Bottom half
-        row = buffer_ + middleY * width_;
-        endRow = buffer_ + bottomY * width_;
+        row = bufferData + middleY * width_;
+        endRow = bufferData + bottomY * width_;
         while (row < endRow)
         {
             int invZ = topToBottom.invZ_;
@@ -856,7 +939,7 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
                 invZ += gradients.dInvZdXInt_;
                 ++dest;
             }
-            
+
             topToBottom.x_ += topToBottom.xStep_;
             topToBottom.invZ_ += topToBottom.invZStep_;
             middleToBottom.x_ += middleToBottom.xStep_;
@@ -866,8 +949,8 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
     else
     {
         // Top half
-        int* row = buffer_ + topY * width_;
-        int* endRow = buffer_ + middleY * width_;
+        int* row = bufferData + topY * width_;
+        int* endRow = bufferData + middleY * width_;
         while (row < endRow)
         {
             int invZ = topToMiddle.invZ_;
@@ -880,16 +963,16 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
                 invZ += gradients.dInvZdXInt_;
                 ++dest;
             }
-            
+
             topToMiddle.x_ += topToMiddle.xStep_;
             topToMiddle.invZ_ += topToMiddle.invZStep_;
             topToBottom.x_ += topToBottom.xStep_;
             row += width_;
         }
-        
+
         // Bottom half
-        row = buffer_ + middleY * width_;
-        endRow = buffer_ + bottomY * width_;
+        row = bufferData + middleY * width_;
+        endRow = bufferData + bottomY * width_;
         while (row < endRow)
         {
             int invZ = middleToBottom.invZ_;
@@ -902,13 +985,50 @@ void OcclusionBuffer::DrawTriangle2D(const Vector3* vertices, bool clockwise)
                 invZ += gradients.dInvZdXInt_;
                 ++dest;
             }
-            
+
             middleToBottom.x_ += middleToBottom.xStep_;
             middleToBottom.invZ_ += middleToBottom.invZStep_;
             topToBottom.x_ += topToBottom.xStep_;
             row += width_;
         }
     }
+}
+
+void OcclusionBuffer::MergeBuffers()
+{
+    ATOMIC_PROFILE(MergeBuffers);
+
+    for (unsigned i = 1; i < buffers_.Size(); ++i)
+    {
+        if (!buffers_[i].used_)
+            continue;
+
+        int* src = buffers_[i].data_;
+        int* dest = buffers_[0].data_;
+        int count = width_ * height_;
+
+        while (count--)
+        {
+            // If thread buffer's depth value is closer, overwrite the original
+            if (*src < *dest)
+                *dest = *src;
+            ++src;
+            ++dest;
+        }
+    }
+}
+
+void OcclusionBuffer::ClearBuffer(unsigned threadIndex)
+{
+    if (threadIndex >= buffers_.Size())
+        return;
+
+    int* dest = buffers_[threadIndex].data_;
+    int count = width_ * height_;
+    int fillValue = (int)OCCLUSION_Z_SCALE;
+
+    while (count--)
+        *dest++ = fillValue;
 }
 
 }

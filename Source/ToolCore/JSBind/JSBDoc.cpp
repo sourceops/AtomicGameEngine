@@ -1,9 +1,28 @@
-// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include <Atomic/Atomic.h>
 #include <Atomic/IO/Log.h>
+#include <Atomic/IO/FileSystem.h>
 #include <Atomic/Core/ProcessUtils.h>
 #include <Atomic/Resource/ResourceCache.h>
 
@@ -46,7 +65,11 @@ static String GetScriptType(JSBFunctionType* ftype)
 
 void JSBDoc::Begin()
 {
-    source_ += "//Atomic JSDoc Definitions\n\n\n";
+    source_ += "//////////////////////////////////////////////////////////\n";
+    source_ += "// IMPORTANT: THIS FILE IS GENERATED, CHANGES WILL BE LOST\n";
+    source_ += "//////////////////////////////////////////////////////////\n\n";
+
+    source_ += "//Atomic JSDoc Definitions\n\n";
 
     source_ += "/**\n * Atomic Game Engine\n * @namespace\n*/\n var " + package_->GetName() + " = {}\n\n";
 }
@@ -159,9 +182,7 @@ void JSBDoc::ExportModuleClasses(JSBModule* module)
                 continue;
 
             String scriptType = GetScriptType(ftype);
-
-            String scriptName =  propertyNames[j];
-            scriptName[0] = tolower(scriptName[0]);
+            String scriptName = prop->GetCasePropertyName();
 
             if (desc.Length())
             {
@@ -218,7 +239,7 @@ void JSBDoc::ExportModuleClasses(JSBModule* module)
 void JSBDoc::ExportModuleConstants(JSBModule* module)
 {
 
-    Vector<String>& constants = module->GetConstants();
+    const Vector<String>& constants = module->GetConstants().Keys();
 
     if (!constants.Size())
         return;
@@ -247,14 +268,21 @@ void JSBDoc::ExportModuleEnums(JSBModule* module)
 
         source_ += " var " + _enum->GetName() + " =  {\n";
 
-        Vector<String>& values = _enum->GetValues();
+        HashMap<String, String>& values = _enum->GetValues();
 
-        for (unsigned j = 0; j < values.Size(); j++)
+        HashMap<String, String>::ConstIterator itr = values.Begin();
+
+        while (itr != values.End())
         {
-            source_ += "    " + values[j] + " : undefined";
+            String name = (*itr).first_;
 
-            if (j !=  values.Size() - 1)
+            source_ += "    " + name + " : undefined";
+
+            itr++;
+
+            if (itr !=  values.End())
                 source_ += ",\n";
+
         }
 
         source_ += "\n\n};\n\n";
@@ -264,6 +292,13 @@ void JSBDoc::ExportModuleEnums(JSBModule* module)
 }
 void JSBDoc::WriteToFile(const String &path)
 {
+    FileSystem* fs = package_->GetSubsystem<FileSystem>();
+
+    String jsDocPath = GetPath(path);
+
+    if (!fs->DirExists(jsDocPath))
+        fs->CreateDir(jsDocPath);
+
     File file(package_->GetContext());
     file.Open(path, FILE_WRITE);
 

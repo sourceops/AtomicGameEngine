@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -34,7 +34,7 @@ static const unsigned AM_EDIT = 0x0;
 static const unsigned AM_FILE = 0x1;
 /// Attribute used for network replication.
 static const unsigned AM_NET = 0x2;
-/// Attribute used for both file serialization and network replication (default.)
+/// Attribute used for both file serialization and network replication (default).
 static const unsigned AM_DEFAULT = 0x3;
 /// Attribute should use latest data grouping instead of delta update in network replication.
 static const unsigned AM_LATESTDATA = 0x4;
@@ -52,6 +52,8 @@ class Serializable;
 /// Abstract base class for invoking attribute accessors.
 class ATOMIC_API AttributeAccessor : public RefCounted
 {
+    ATOMIC_REFCOUNTED(AttributeAccessor)
+
 public:
     /// Get the attribute.
     virtual void Get(const Serializable* ptr, Variant& dest) const = 0;
@@ -71,7 +73,7 @@ struct AttributeInfo
         ptr_(0)
     {
     }
-    
+
     /// Construct offset attribute.
     AttributeInfo(VariantType type, const char* name, size_t offset, const Variant& defaultValue, unsigned mode) :
         type_(type),
@@ -83,7 +85,7 @@ struct AttributeInfo
         ptr_(0)
     {
     }
-    
+
     /// Construct offset enum attribute.
     AttributeInfo(const char* name, size_t offset, const char** enumNames, const Variant& defaultValue, unsigned mode) :
         type_(VAR_INT),
@@ -95,7 +97,7 @@ struct AttributeInfo
         ptr_(0)
     {
     }
-    
+
     /// Construct accessor attribute.
     AttributeInfo(VariantType type, const char* name, AttributeAccessor* accessor, const Variant& defaultValue, unsigned mode) :
         type_(type),
@@ -108,9 +110,10 @@ struct AttributeInfo
         ptr_(0)
     {
     }
-    
+
     /// Construct accessor enum attribute.
-    AttributeInfo(const char* name, AttributeAccessor* accessor, const char** enumNames, const Variant& defaultValue, unsigned mode) :
+    AttributeInfo(const char* name, AttributeAccessor* accessor, const char** enumNames, const Variant& defaultValue,
+        unsigned mode) :
         type_(VAR_INT),
         name_(name),
         offset_(0),
@@ -121,7 +124,7 @@ struct AttributeInfo
         ptr_(0)
     {
     }
-    
+
     /// Attribute type.
     VariantType type_;
     /// Name.

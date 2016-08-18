@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -33,8 +33,8 @@ class SoundStream;
 /// %Sound resource.
 class ATOMIC_API Sound : public Resource
 {
-    OBJECT(Sound);
-    
+    ATOMIC_OBJECT(Sound, Resource);
+
 public:
     /// Construct.
     Sound(Context* context);
@@ -42,10 +42,10 @@ public:
     virtual ~Sound();
     /// Register object factory.
     static void RegisterObject(Context* context);
-    
+
     /// Load resource from stream. May be called from a worker thread. Return true if successful.
     virtual bool BeginLoad(Deserializer& source);
-    
+
     /// Load raw sound data.
     bool LoadRaw(Deserializer& source);
     /// Load WAV format sound data.
@@ -62,43 +62,56 @@ public:
     void SetLooped(bool enable);
     /// Define loop.
     void SetLoop(unsigned repeatOffset, unsigned endOffset);
-    
+
     /// Return a new instance of a decoder sound stream. Used by compressed sounds.
     SharedPtr<SoundStream> GetDecoderStream() const;
+
     /// Return shared sound data.
     SharedArrayPtr<signed char> GetData() const { return data_; }
+
     /// Return sound data start.
     signed char* GetStart() const { return data_.Get(); }
+
     /// Return loop start.
     signed char* GetRepeat() const { return repeat_; }
+
     /// Return sound data end.
     signed char* GetEnd() const { return end_; }
+
     /// Return length in seconds.
     float GetLength() const;
+
     /// Return total sound data size.
     unsigned GetDataSize() const { return dataSize_; }
+
     /// Return sample size.
     unsigned GetSampleSize() const;
+
     /// Return default frequency as a float.
     float GetFrequency() const { return (float)frequency_; }
+
     /// Return default frequency as an integer.
     unsigned GetIntFrequency() const { return frequency_; }
+
     /// Return whether is looped.
     bool IsLooped() const { return looped_; }
+
     /// Return whether data is sixteen bit.
     bool IsSixteenBit() const { return sixteenBit_; }
+
     /// Return whether data is stereo.
     bool IsStereo() const { return stereo_; }
+
     /// Return whether is compressed.
     bool IsCompressed() const { return compressed_; }
-    
+
     /// Fix interpolation by copying data from loop start to loop end (looped), or adding silence (oneshot.) Called internally, does not normally need to be called, unless the sound data is modified manually on the fly.
     void FixInterpolation();
 
 private:
     /// Load optional parameters from an XML file.
     void LoadParameters();
-    
+
     /// Sound data.
     SharedArrayPtr<signed char> data_;
     /// Loop start.

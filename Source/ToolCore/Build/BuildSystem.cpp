@@ -1,8 +1,25 @@
-// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
-#include "AtomicEditor.h"
 #include <Atomic/Core/Context.h>
 #include <Atomic/Core/StringUtils.h>
 #include <Atomic/IO/FileSystem.h>
@@ -47,22 +64,15 @@ void BuildSystem::QueueBuild(BuildBase* buildBase)
     queuedBuilds_.Push(SharedPtr<BuildBase>(buildBase));
 }
 
-void BuildSystem::BuildComplete(PlatformID platform, const String &buildFolder, bool success, bool fail3D)
+void BuildSystem::BuildComplete(PlatformID platform, const String &buildFolder, bool success, const String& buildMessage)
 {
     VariantMap eventData;
 
-    if (success)
-    {
-        eventData[BuildComplete::P_PLATFORMID] = (unsigned) platform;
-        SendEvent(E_BUILDCOMPLETE, eventData);
-        LOGINFOF("Build Success");
-    }
-    else
-    {
-        eventData[BuildFailed::P_PLATFORMID] = (unsigned) platform;
-        SendEvent(E_BUILDFAILED, eventData);
-        LOGINFOF("Build Failed");
-    }
+    eventData[BuildComplete::P_PLATFORMID] = (unsigned) platform;
+    eventData[BuildComplete::P_BUILDFOLDER] = buildFolder;
+    eventData[BuildComplete::P_SUCCESS] = success;
+    eventData[BuildComplete::P_MESSAGE] = buildMessage;
+    SendEvent(E_BUILDCOMPLETE, eventData);
 
     currentBuild_ = 0;
 }

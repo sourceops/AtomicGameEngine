@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,10 +20,11 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
+#include "../IO/Log.h"
 #include "../Scene/ValueAnimation.h"
 #include "../Scene/ValueAnimationInfo.h"
-#include "../IO/Log.h"
 
 #include "../DebugNew.h"
 
@@ -70,7 +71,15 @@ bool ValueAnimationInfo::Update(float timeStep)
     if (!animation_ || !target_)
         return true;
 
-    currentTime_ += timeStep * speed_;
+    return SetTime(currentTime_ + timeStep * speed_);
+}
+
+bool ValueAnimationInfo::SetTime(float time)
+{
+    if (!animation_ || !target_)
+        return true;
+
+    currentTime_ = time;
 
     if (!animation_->IsValid())
         return true;
@@ -131,7 +140,7 @@ float ValueAnimationInfo::CalculateScaledTime(float currentTime, bool& finished)
         return Clamp(currentTime, beginTime, endTime);
 
     default:
-        LOGERROR("Unsupported attribute animation wrap mode");
+        ATOMIC_LOGERROR("Unsupported attribute animation wrap mode");
         return beginTime;
     }
 }

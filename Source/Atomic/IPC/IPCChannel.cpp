@@ -1,3 +1,24 @@
+//
+// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include "../IO/Log.h"
 
@@ -6,7 +27,8 @@
 namespace Atomic
 {
 
-IPCChannel::IPCChannel(Context* context) : Object(context)
+IPCChannel::IPCChannel(Context* context, unsigned id) : Object(context),
+    id_(id)
 {
     ipc_ = GetSubsystem<IPC>();
     currentHeader_.messageType_ = IPC_MESSAGE_UNDEFINED;
@@ -20,9 +42,7 @@ IPCChannel::~IPCChannel()
 void IPCChannel::PostMessage(StringHash eventType, VariantMap &eventData)
 {
     IPCMessageEvent msgEvent;
-    msgEvent.DoSend(transport_, eventType, eventData);
-
-    LOGERRORF("Posting Message");
+    msgEvent.DoSend(transport_, id_, eventType, eventData);
 }
 
 bool IPCChannel::Receive()
@@ -40,7 +60,7 @@ bool IPCChannel::Receive()
         return true;
 
     dataBuffer_.Seek(dataBuffer_.GetSize());
-    dataBuffer_.Write(data, sz);
+    dataBuffer_.Write(data, (unsigned) sz);
     dataBuffer_.Seek(0);
 
     while (true)
@@ -65,8 +85,9 @@ bool IPCChannel::Receive()
             IPCMessageEvent event;
             StringHash eventType;
             VariantMap eventData;
-            event.DoRead(buffer, eventType, eventData);
-            ipc_->QueueEvent(eventType, eventData);
+            unsigned id;
+            event.DoRead(buffer, id, eventType, eventData);
+            ipc_->QueueEvent(id, eventType, eventData);
         }
 
         if (dataBuffer_.IsEof())

@@ -1,12 +1,25 @@
-
-// Portions Copyright (c) 2008-2015 the Urho3D project.
-
+//
+// Copyright (c) 2008-2015 the Urho3D project.
 // Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
-
-#include "AtomicEditor.h"
-
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include <Atomic/UI/UI.h>
 #include <Atomic/UI/UIBatch.h>
@@ -18,7 +31,9 @@
 #include <Atomic/Graphics/Renderer.h>
 #include <Atomic/Core/CoreEvents.h>
 
+#include "UIRenderer.h"
 #include "UISceneView.h"
+
 using namespace tb;
 
 namespace Atomic
@@ -30,6 +45,7 @@ UISceneView::UISceneView(Context* context, bool createWidget) : UIWidget(context
     size_(-1, -1),
     resizeRequired_(false)
 {
+    UI* ui= GetSubsystem<UI>();
 
     if (createWidget)
     {
@@ -42,29 +58,24 @@ UISceneView::UISceneView(Context* context, bool createWidget) : UIWidget(context
         widget_->SetGravity(WIDGET_GRAVITY_ALL);
         ((SceneViewWidget*)widget_)->sceneView_ = this;
 
-        GetSubsystem<UI>()->WrapWidget(this, widget_);
+        ui->WrapWidget(this, widget_);
 
 
     }
 
-   SubscribeToEvent(E_ENDFRAME, HANDLER(UISceneView, HandleEndFrame));
+    renderer_ = ui->GetRenderer();
+
+    SubscribeToEvent(E_ENDFRAME, ATOMIC_HANDLER(UISceneView, HandleEndFrame));
 }
 
 UISceneView::~UISceneView()
 {
-    // FIXME: need to refactor Light2D viewport handling
-    if (viewport_.NotNull())
-    {
-        RenderPath* renderpath = viewport_->GetRenderPath();
-        if (renderpath)
-            renderpath->RemoveCommands("Light2D");
-    }
 
 }
 
 bool UISceneView::OnEvent(const TBWidgetEvent &ev)
 {
-    return false;
+    return UIWidget::OnEvent(ev);
 }
 
 void UISceneView::HandleEndFrame(StringHash eventType, VariantMap& eventData)
@@ -200,28 +211,57 @@ void SceneViewWidget::OnPaint(const PaintProps &paint_props)
         size.x_ = rect.w;
         size.y_ = rect.h;
         sceneView_->SetResizeRequired();
+        // early out here, responsible for flicker
+        // https://github.com/AtomicGameEngine/AtomicGameEngine/issues/115
         return;
     }
 
     float* data = &vertexData_[0];
 
-    data[0] = rect.x;
-    data[1] = rect.y;
+    float color;
+    float fopacity = GetOpacity() * sceneView_->renderer_->GetOpacity();
+    unsigned char opacity = (unsigned char) (fopacity* 255.0f);
+    ((unsigned&)color) = (0x00FFFFFF + (((uint32)opacity) << 24));
 
-    data[6] = rect.x + rect.w;
-    data[7] =  rect.y;
+    float x = (float) rect.x;
+    float y = (float) rect.y;
+    float w = (float) rect.w;
+    float h = (float) rect.h;
 
-    data[12] = rect.x + rect.w;
-    data[13] = rect.y + rect.h;
+#ifdef ATOMIC_PLATFORM_WINDOWS
 
-    data[18] = rect.x;
-    data[19] = rect.y;
+#ifndef ATOMIC_D3D11
+    //Direct3D9 Adjustment
+    x += 0.5f;
+    y += 0.5f;
+#endif
 
-    data[24] = rect.x + rect.w;
-    data[25] = rect.y + rect.h;
+#endif
 
-    data[30] = rect.x;
-    data[31] = rect.y + rect.h;
+    data[3] = color;
+    data[9] = color;
+    data[15] = color;
+    data[21] = color;
+    data[27] = color;
+    data[33] = color;
+
+    data[0] = x;
+    data[1] = y;
+
+    data[6] = x + w;
+    data[7] =  y;
+
+    data[12] = x + w;
+    data[13] = y + h;
+
+    data[18] = x;
+    data[19] = y;
+
+    data[24] = x + w;
+    data[25] = y + h;
+
+    data[30] = x;
+    data[31] = y + h;
 
     sceneView_->GetSubsystem<UI>()->SubmitBatchVertexData(sceneView_->GetRenderTexture(), vertexData_);
 

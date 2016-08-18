@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -23,8 +23,9 @@
 #pragma once
 
 #include "../Container/HashMap.h"
-#include "../Math/StringHash.h"
 #include "../Core/Variant.h"
+#include "../Math/BoundingBox.h"
+#include "../Math/StringHash.h"
 
 namespace Atomic
 {
@@ -37,7 +38,6 @@ class Rect;
 class Vector2;
 class Vector3;
 class Vector4;
-class BoundingBox;
 
 /// Abstract stream for writing.
 class ATOMIC_API Serializer
@@ -45,16 +45,20 @@ class ATOMIC_API Serializer
 public:
     /// Destruct.
     virtual ~Serializer();
-    
+
     /// Write bytes to the stream. Return number of bytes actually written.
     virtual unsigned Write(const void* data, unsigned size) = 0;
-    
+
+    /// Write a 64-bit integer.
+    bool WriteInt64(long long value);
     /// Write a 32-bit integer.
     bool WriteInt(int value);
     /// Write a 16-bit integer.
     bool WriteShort(short value);
     /// Write an 8-bit integer.
     bool WriteByte(signed char value);
+    /// Write a 64-bit unsigned integer.
+    bool WriteUInt64(unsigned long long value);
     /// Write a 32-bit unsigned integer.
     bool WriteUInt(unsigned value);
     /// Write a 16-bit unsigned integer.
@@ -65,6 +69,8 @@ public:
     bool WriteBool(bool value);
     /// Write a float.
     bool WriteFloat(float value);
+    /// Write a double.
+    bool WriteDouble(double value);
     /// Write an IntRect.
     bool WriteIntRect(const IntRect& value);
     /// Write an IntVector2.
@@ -111,6 +117,8 @@ public:
     bool WriteVariantData(const Variant& value);
     /// Write a variant vector.
     bool WriteVariantVector(const VariantVector& value);
+    /// Write a variant vector.
+    bool WriteStringVector(const StringVector& value);
     /// Write a variant map.
     bool WriteVariantMap(const VariantMap& value);
     /// Write a variable-length encoded unsigned integer, which can use 29 bits maximum.

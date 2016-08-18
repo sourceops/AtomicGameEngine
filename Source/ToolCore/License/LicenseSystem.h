@@ -1,6 +1,24 @@
-// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 // BEGIN LICENSE MANAGEMENT
 
@@ -16,7 +34,7 @@ namespace ToolCore
 
 class LicenseSystem : public Object
 {
-    OBJECT(LicenseSystem);
+    ATOMIC_OBJECT(LicenseSystem, Object);
 
 public:
 
@@ -48,18 +66,22 @@ public:
 
     void Initialize();
 
-    bool LicenseWindows() { return licenseWindows_; }
-    bool LicenseMac() { return licenseMac_; }
-    bool LicenseAndroid() { return licenseAndroid_; }
-    bool LicenseIOS() { return licenseIOS_; }
-    bool LicenseHTML5() { return licenseHTML5_; }
-    bool LicenseModule3D() { return licenseModule3D_; }
+    bool GetSourceBuild();
+
+    bool GetLicenseWindows() { return licenseWindows_; }
+    bool GetLicenseMac() { return licenseMac_; }
+    bool GetLicenseAndroid() { return licenseAndroid_; }
+    bool GetLicenseIOS() { return licenseIOS_; }
+    bool GetLicenseHTML5() { return licenseHTML5_; }
+    bool GetLicenseModule3D() { return licenseModule3D_; }
 
     /// Returns whether there are any platform licenses available
     bool IsStandardLicense();
 
     void Activate(const String& key, const LicenseParse& parse);
-    SharedPtr<CurlRequest>& Deactivate();
+
+    /// Returns true if request to deactivate is made
+    bool Deactivate();
 
     void ResetLicense();
     bool LoadLicense();

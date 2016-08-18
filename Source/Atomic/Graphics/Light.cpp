@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,18 +20,20 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
-#include "../Graphics/Camera.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
+#include "../Core/Profiler.h"
+#include "../Graphics/Camera.h"
 #include "../Graphics/DebugRenderer.h"
 #include "../Graphics/Graphics.h"
 #include "../Graphics/Light.h"
-#include "../Scene/Node.h"
 #include "../Graphics/OctreeQuery.h"
-#include "../Core/Profiler.h"
-#include "../Resource/ResourceCache.h"
 #include "../Graphics/Texture2D.h"
 #include "../Graphics/TextureCube.h"
+#include "../IO/Log.h"
+#include "../Resource/ResourceCache.h"
+#include "../Scene/Node.h"
 
 #include "../DebugNew.h"
 
@@ -47,6 +49,7 @@ static const float DEFAULT_SPECULARINTENSITY = 1.0f;
 static const float DEFAULT_BRIGHTNESS = 1.0f;
 static const float DEFAULT_CONSTANTBIAS = 0.0002f;
 static const float DEFAULT_SLOPESCALEDBIAS = 0.5f;
+static const float DEFAULT_NORMALOFFSET = 0.0f;
 static const float DEFAULT_BIASAUTOADJUST = 1.0f;
 static const float DEFAULT_SHADOWFADESTART = 0.8f;
 static const float DEFAULT_SHADOWQUANTIZE = 0.5f;
@@ -66,6 +69,7 @@ void BiasParameters::Validate()
 {
     constantBias_ = Clamp(constantBias_, -1.0f, 1.0f);
     slopeScaledBias_ = Clamp(slopeScaledBias_, -16.0f, 16.0f);
+    normalOffset_ = Max(normalOffset_, 0.0f);
 }
 
 void CascadeParameters::Validate()
@@ -110,38 +114,42 @@ void Light::RegisterObject(Context* context)
 {
     context->RegisterFactory<Light>(SCENE_CATEGORY);
 
-    ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
-    ENUM_ACCESSOR_ATTRIBUTE("Light Type", GetLightType, SetLightType, LightType, typeNames, DEFAULT_LIGHTTYPE, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Color", GetColor, SetColor, Color, Color::WHITE, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Specular Intensity", GetSpecularIntensity, SetSpecularIntensity, float, DEFAULT_SPECULARINTENSITY, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Brightness Multiplier", GetBrightness, SetBrightness, float, DEFAULT_BRIGHTNESS, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Range", GetRange, SetRange, float, DEFAULT_RANGE, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Spot FOV", GetFov, SetFov, float, DEFAULT_LIGHT_FOV, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Spot Aspect Ratio", GetAspectRatio, SetAspectRatio, float, 1.0f, AM_DEFAULT);
-    MIXED_ACCESSOR_ATTRIBUTE("Attenuation Texture", GetRampTextureAttr, SetRampTextureAttr, ResourceRef, ResourceRef(Texture2D::GetTypeStatic()), AM_DEFAULT);
-    MIXED_ACCESSOR_ATTRIBUTE("Light Shape Texture", GetShapeTextureAttr, SetShapeTextureAttr, ResourceRef, ResourceRef(Texture2D::GetTypeStatic()), AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Can Be Occluded", IsOccludee, SetOccludee, bool, true, AM_DEFAULT);
-    ATTRIBUTE("Cast Shadows", bool, castShadows_, false, AM_DEFAULT);
-    ATTRIBUTE("Per Vertex", bool, perVertex_, false, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Draw Distance", GetDrawDistance, SetDrawDistance, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Fade Distance", GetFadeDistance, SetFadeDistance, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Shadow Distance", GetShadowDistance, SetShadowDistance, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Shadow Fade Distance", GetShadowFadeDistance, SetShadowFadeDistance, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Shadow Intensity", GetShadowIntensity, SetShadowIntensity, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Shadow Resolution", GetShadowResolution, SetShadowResolution, float, 1.0f, AM_DEFAULT);
-    ATTRIBUTE("Focus To Scene", bool, shadowFocus_.focus_, true, AM_DEFAULT);
-    ATTRIBUTE("Non-uniform View", bool, shadowFocus_.nonUniform_, true, AM_DEFAULT);
-    ATTRIBUTE("Auto-Reduce Size", bool, shadowFocus_.autoSize_, true, AM_DEFAULT);
-    ATTRIBUTE("CSM Splits", Vector4, shadowCascade_.splits_, Vector4(DEFAULT_SHADOWSPLIT, 0.0f, 0.0f, 0.0f), AM_DEFAULT);
-    ATTRIBUTE("CSM Fade Start", float, shadowCascade_.fadeStart_, DEFAULT_SHADOWFADESTART, AM_DEFAULT);
-    ATTRIBUTE("CSM Bias Auto Adjust", float, shadowCascade_.biasAutoAdjust_, DEFAULT_BIASAUTOADJUST, AM_DEFAULT);
-    ATTRIBUTE("View Size Quantize", float, shadowFocus_.quantize_, DEFAULT_SHADOWQUANTIZE, AM_DEFAULT);
-    ATTRIBUTE("View Size Minimum", float, shadowFocus_.minView_, DEFAULT_SHADOWMINVIEW, AM_DEFAULT);
-    ATTRIBUTE("Depth Constant Bias", float, shadowBias_.constantBias_, DEFAULT_CONSTANTBIAS, AM_DEFAULT);
-    ATTRIBUTE("Depth Slope Bias", float, shadowBias_.slopeScaledBias_, DEFAULT_SLOPESCALEDBIAS, AM_DEFAULT);
-    ATTRIBUTE("Near/Farclip Ratio", float, shadowNearFarRatio_, DEFAULT_SHADOWNEARFARRATIO, AM_DEFAULT);
-    ATTRIBUTE("View Mask", int, viewMask_, DEFAULT_VIEWMASK, AM_DEFAULT);
-    ATTRIBUTE("Light Mask", int, lightMask_, DEFAULT_LIGHTMASK, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
+    ATOMIC_ENUM_ACCESSOR_ATTRIBUTE("Light Type", GetLightType, SetLightType, LightType, typeNames, DEFAULT_LIGHTTYPE, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Color", GetColor, SetColor, Color, Color::WHITE, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Specular Intensity", GetSpecularIntensity, SetSpecularIntensity, float, DEFAULT_SPECULARINTENSITY,
+        AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Brightness Multiplier", GetBrightness, SetBrightness, float, DEFAULT_BRIGHTNESS, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Range", GetRange, SetRange, float, DEFAULT_RANGE, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Spot FOV", GetFov, SetFov, float, DEFAULT_LIGHT_FOV, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Spot Aspect Ratio", GetAspectRatio, SetAspectRatio, float, 1.0f, AM_DEFAULT);
+    ATOMIC_MIXED_ACCESSOR_ATTRIBUTE("Attenuation Texture", GetRampTextureAttr, SetRampTextureAttr, ResourceRef,
+        ResourceRef(Texture2D::GetTypeStatic()), AM_DEFAULT);
+    ATOMIC_MIXED_ACCESSOR_ATTRIBUTE("Light Shape Texture", GetShapeTextureAttr, SetShapeTextureAttr, ResourceRef,
+        ResourceRef(Texture2D::GetTypeStatic()), AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Can Be Occluded", IsOccludee, SetOccludee, bool, true, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Cast Shadows", bool, castShadows_, false, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Per Vertex", bool, perVertex_, false, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Draw Distance", GetDrawDistance, SetDrawDistance, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Fade Distance", GetFadeDistance, SetFadeDistance, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Shadow Distance", GetShadowDistance, SetShadowDistance, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Shadow Fade Distance", GetShadowFadeDistance, SetShadowFadeDistance, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Shadow Intensity", GetShadowIntensity, SetShadowIntensity, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Shadow Resolution", GetShadowResolution, SetShadowResolution, float, 1.0f, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Focus To Scene", bool, shadowFocus_.focus_, true, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Non-uniform View", bool, shadowFocus_.nonUniform_, true, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Auto-Reduce Size", bool, shadowFocus_.autoSize_, true, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("CSM Splits", Vector4, shadowCascade_.splits_, Vector4(DEFAULT_SHADOWSPLIT, 0.0f, 0.0f, 0.0f), AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("CSM Fade Start", float, shadowCascade_.fadeStart_, DEFAULT_SHADOWFADESTART, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("CSM Bias Auto Adjust", float, shadowCascade_.biasAutoAdjust_, DEFAULT_BIASAUTOADJUST, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("View Size Quantize", float, shadowFocus_.quantize_, DEFAULT_SHADOWQUANTIZE, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("View Size Minimum", float, shadowFocus_.minView_, DEFAULT_SHADOWMINVIEW, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Depth Constant Bias", float, shadowBias_.constantBias_, DEFAULT_CONSTANTBIAS, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Depth Slope Bias", float, shadowBias_.slopeScaledBias_, DEFAULT_SLOPESCALEDBIAS, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Normal Offset", float, shadowBias_.normalOffset_, DEFAULT_NORMALOFFSET, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Near/Farclip Ratio", float, shadowNearFarRatio_, DEFAULT_SHADOWNEARFARRATIO, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("View Mask", int, viewMask_, DEFAULT_VIEWMASK, AM_DEFAULT);
+    ATOMIC_ATTRIBUTE("Light Mask", int, lightMask_, DEFAULT_LIGHTMASK, AM_DEFAULT);
 }
 
 void Light::OnSetAttribute(const AttributeInfo& attr, const Variant& src)
@@ -151,9 +159,11 @@ void Light::OnSetAttribute(const AttributeInfo& attr, const Variant& src)
     // Validate the bias, cascade & focus parameters
     if (attr.offset_ >= offsetof(Light, shadowBias_) && attr.offset_ < (offsetof(Light, shadowBias_) + sizeof(BiasParameters)))
         shadowBias_.Validate();
-    else if (attr.offset_ >= offsetof(Light, shadowCascade_) && attr.offset_ < (offsetof(Light, shadowCascade_) + sizeof(CascadeParameters)))
+    else if (attr.offset_ >= offsetof(Light, shadowCascade_) &&
+             attr.offset_ < (offsetof(Light, shadowCascade_) + sizeof(CascadeParameters)))
         shadowCascade_.Validate();
-    else if (attr.offset_ >= offsetof(Light, shadowFocus_) && attr.offset_ < (offsetof(Light, shadowFocus_) + sizeof(FocusParameters)))
+    else if (attr.offset_ >= offsetof(Light, shadowFocus_) &&
+             attr.offset_ < (offsetof(Light, shadowFocus_) + sizeof(FocusParameters)))
         shadowFocus_.Validate();
 }
 
@@ -163,7 +173,7 @@ void Light::ProcessRayQuery(const RayOctreeQuery& query, PODVector<RayQueryResul
     if (lightType_ == LIGHT_DIRECTIONAL)
         return;
 
-    float distance;
+    float distance = query.maxDistance_;
     switch (query.level_)
     {
     case RAY_AABB:
@@ -194,6 +204,10 @@ void Light::ProcessRayQuery(const RayOctreeQuery& query, PODVector<RayQueryResul
                 return;
         }
         break;
+
+    case RAY_TRIANGLE_UV:
+        ATOMIC_LOGWARNING("RAY_TRIANGLE_UV query level is not supported for Light component");
+        return;
     }
 
     // If the code reaches here then we have a hit
@@ -376,15 +390,25 @@ Frustum Light::GetFrustum() const
 {
     // Note: frustum is unaffected by node or parent scale
     Matrix3x4 frustumTransform(node_ ? Matrix3x4(node_->GetWorldPosition(), node_->GetWorldRotation(), 1.0f) :
-        Matrix3x4::IDENTITY);
+                               Matrix3x4::IDENTITY);
     Frustum ret;
     ret.Define(fov_, aspectRatio_, 1.0f, M_MIN_NEARCLIP, range_, frustumTransform);
     return ret;
 }
 
+Frustum Light::GetViewSpaceFrustum(const Matrix3x4& view) const
+{
+    // Note: frustum is unaffected by node or parent scale
+    Matrix3x4 frustumTransform(node_ ? Matrix3x4(node_->GetWorldPosition(), node_->GetWorldRotation(), 1.0f) :
+                               Matrix3x4::IDENTITY);
+    Frustum ret;
+    ret.Define(fov_, aspectRatio_, 1.0f, M_MIN_NEARCLIP, range_, view * frustumTransform);
+    return ret;
+}
+
 int Light::GetNumShadowSplits() const
 {
-    int ret = 1;
+    unsigned ret = 1;
 
     if (shadowCascade_.splits_[1] > shadowCascade_.splits_[0])
     {
@@ -397,7 +421,7 @@ int Light::GetNumShadowSplits() const
         }
     }
 
-    return Min(ret, MAX_CASCADE_SPLITS);
+    return (int)Min(ret, MAX_CASCADE_SPLITS);
 }
 
 const Matrix3x4& Light::GetVolumeTransform(Camera* camera)
@@ -408,16 +432,8 @@ const Matrix3x4& Light::GetVolumeTransform(Camera* camera)
     switch (lightType_)
     {
     case LIGHT_DIRECTIONAL:
-        {
-            Matrix3x4 quadTransform;
-            Vector3 near, far;
-            // Position the directional light quad in halfway between far & near planes to prevent depth clipping
-            camera->GetFrustumSize(near, far);
-            quadTransform.SetTranslation(Vector3(0.0f, 0.0f, (camera->GetNearClip() + camera->GetFarClip()) * 0.5f));
-            quadTransform.SetScale(Vector3(far.x_, far.y_, 1.0f)); // Will be oversized, but doesn't matter (gets frustum clipped)
-            volumeTransform_ = camera->GetEffectiveWorldTransform() * quadTransform;
-            break;
-        }
+        volumeTransform_ = GetFullscreenQuadTransform(camera);
+        break;
 
     case LIGHT_SPOT:
         {
@@ -557,6 +573,17 @@ void Light::SetIntensitySortValue(const BoundingBox& box)
 void Light::SetLightQueue(LightBatchQueue* queue)
 {
     lightQueue_ = queue;
+}
+
+Matrix3x4 Light::GetFullscreenQuadTransform(Camera* camera)
+{
+    Matrix3x4 quadTransform;
+    Vector3 near, far;
+    // Position the directional light quad in halfway between far & near planes to prevent depth clipping
+    camera->GetFrustumSize(near, far);
+    quadTransform.SetTranslation(Vector3(0.0f, 0.0f, (camera->GetNearClip() + camera->GetFarClip()) * 0.5f));
+    quadTransform.SetScale(Vector3(far.x_, far.y_, 1.0f)); // Will be oversized, but doesn't matter (gets frustum clipped)
+    return camera->GetEffectiveWorldTransform() * quadTransform;
 }
 
 }

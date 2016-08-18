@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include "Atomic/Atomic.h"
+
 namespace Atomic
 {
 
@@ -33,12 +35,14 @@ public:
     Mutex();
     /// Destruct.
     ~Mutex();
-    
+
     /// Acquire the mutex. Block if already acquired.
     void Acquire();
+    /// Try to acquire the mutex without locking. Return true if successful.
+    bool TryAcquire();
     /// Release the mutex.
     void Release();
-    
+
 private:
     /// Mutex handle.
     void* handle_;
@@ -52,13 +56,13 @@ public:
     MutexLock(Mutex& mutex);
     /// Destruct. Release the mutex.
     ~MutexLock();
-    
+
 private:
     /// Prevent copy construction.
     MutexLock(const MutexLock& rhs);
     /// Prevent assignment.
-    MutexLock& operator = (const MutexLock& rhs);
-    
+    MutexLock& operator =(const MutexLock& rhs);
+
     /// Mutex reference.
     Mutex& mutex_;
 };

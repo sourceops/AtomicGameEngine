@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,18 +22,20 @@
 
 #pragma once
 
-#include "../Math/BoundingBox.h"
-#include "../Math/Rect.h"
 #include "../Container/Ptr.h"
 #include "../Core/Variant.h"
+#include "../Math/BoundingBox.h"
+#include "../Math/Rect.h"
 
 namespace pugi
 {
-    struct xml_node_struct;
-    class xpath_node;
-    class xpath_node_set;
-    class xpath_query;
-    class xpath_variable_set;
+
+struct xml_node_struct;
+class xpath_node;
+class xpath_node_set;
+class xpath_query;
+class xpath_variable_set;
+
 }
 
 namespace Atomic
@@ -58,7 +60,7 @@ public:
     /// Destruct.
     ~XMLElement();
     /// Assignment operator.
-    XMLElement& operator = (const XMLElement& rhs);
+    XMLElement& operator =(const XMLElement& rhs);
 
     /// Create a child element.
     XMLElement CreateChild(const String& name);
@@ -112,6 +114,8 @@ public:
     bool SetColor(const String& name, const Color& value);
     /// Set a float attribute.
     bool SetFloat(const String& name, float value);
+    /// Set a double attribute.
+    bool SetDouble(const String& name, double value);
     /// Set an unsigned integer attribute.
     bool SetUInt(const String& name, unsigned value);
     /// Set an integer attribute.
@@ -132,10 +136,12 @@ public:
     bool SetVariantValue(const Variant& value);
     /// Set a resource reference attribute.
     bool SetResourceRef(const ResourceRef& value);
-    /// Set a resource referene list attribute.
+    /// Set a resource reference list attribute.
     bool SetResourceRefList(const ResourceRefList& value);
     /// Set a variant vector attribute. Creates child elements as necessary.
     bool SetVariantVector(const VariantVector& value);
+    /// Set a string vector attribute. Creates child elements as necessary.
+    bool SetStringVector(const StringVector& value);
     /// Set a variant map attribute. Creates child elements as necessary.
     bool SetVariantMap(const VariantMap& value);
     /// Set a Vector2 attribute.
@@ -152,13 +158,13 @@ public:
     bool SetMatrix3x4(const String& name, const Matrix3x4& value);
     /// Set a Matrix4 attribute.
     bool SetMatrix4(const String& name, const Matrix4& value);
-    
+
     /// Return whether does not refer to an element or an XPath node.
     bool IsNull() const;
     /// Return whether refers to an element or an XPath node.
     bool NotNull() const;
     /// Return true if refers to an element or an XPath node.
-    operator bool () const;
+    operator bool() const;
     /// Return element name (or attribute name if it is an attribute only XPath query result).
     String GetName() const;
     /// Return whether has a child element.
@@ -211,6 +217,8 @@ public:
     Color GetColor(const String& name) const;
     /// Return a float attribute, or zero if missing.
     float GetFloat(const String& name) const;
+    /// Return a double attribute, or zero if missing.
+    double GetDouble(const String& name) const;
     /// Return an unsigned integer attribute, or zero if missing.
     unsigned GetUInt(const String& name) const;
     /// Return an integer attribute, or zero if missing.
@@ -233,6 +241,8 @@ public:
     ResourceRefList GetResourceRefList() const;
     /// Return a variant vector attribute, or empty if missing.
     VariantVector GetVariantVector() const;
+    /// Return a string vector attribute, or empty if missing.
+    StringVector GetStringVector() const;
     /// Return a variant map attribute, or empty if missing.
     VariantMap GetVariantMap() const;
     /// Return a Vector2 attribute, or zero vector if missing.
@@ -253,17 +263,22 @@ public:
     Matrix4 GetMatrix4(const String& name) const;
     /// Return XML file.
     XMLFile* GetFile() const;
+
     /// Return pugixml xml_node_struct.
     pugi::xml_node_struct* GetNode() const { return node_; }
+
     /// Return XPath query result set.
     const XPathResultSet* GetXPathResultSet() const { return xpathResultSet_; }
+
     /// Return pugixml xpath_node.
     const pugi::xpath_node* GetXPathNode() const { return xpathNode_; }
+
     /// Return current result index.
     unsigned GetXPathResultIndex() const { return xpathResultIndex_; }
+
     /// Return next XPath query result. Only valid when this instance of XMLElement is itself one of the query result in the result set.
     XMLElement NextResult() const;
-    
+
     /// Empty XMLElement.
     static const XMLElement EMPTY;
 
@@ -288,15 +303,15 @@ public:
     XPathResultSet();
     /// Construct with result set from XPath query.
     XPathResultSet(XMLFile* file, pugi::xpath_node_set* resultSet);
-    // Copy-construct.
+    /// Copy-construct.
     XPathResultSet(const XPathResultSet& rhs);
     /// Destruct.
     ~XPathResultSet();
     /// Assignment operator.
-    XPathResultSet& operator = (const XPathResultSet& rhs);
+    XPathResultSet& operator =(const XPathResultSet& rhs);
     /// Return the n-th result in the set. Call XMLElement::GetNextResult() to get the subsequent result in the set.
     /// Note: The XPathResultSet return value must be stored in a lhs variable to ensure the underlying xpath_node_set* is still valid while performing XPathResultSet::FirstResult(), XPathResultSet::operator [], and XMLElement::NextResult().
-    XMLElement operator[](unsigned index) const;
+    XMLElement operator [](unsigned index) const;
     /// Return the first result in the set. Call XMLElement::GetNextResult() to get the subsequent result in the set.
     /// Note: The XPathResultSet return value must be stored in a lhs variable to ensure the underlying xpath_node_set* is still valid while performing XPathResultSet::FirstResult(), XPathResultSet::operator [], and XMLElement::NextResult().
     XMLElement FirstResult();
@@ -304,6 +319,7 @@ public:
     unsigned Size() const;
     /// Return whether result set is empty.
     bool Empty() const;
+
     /// Return pugixml xpath_node_set.
     pugi::xpath_node_set* GetXPathNodeSet() const { return resultSet_; }
 
@@ -349,10 +365,13 @@ public:
     /// Evaluate XPath query and expecting an XPath query result set as return value.
     /// Note: The XPathResultSet return value must be stored in a lhs variable to ensure the underlying xpath_node_set* is still valid while performing XPathResultSet::FirstResult(), XPathResultSet::operator [], and XMLElement::NextResult().
     XPathResultSet Evaluate(XMLElement element) const;
+
     /// Return query string.
     String GetQuery() const { return queryString_; }
+
     /// Return pugixml xpath_query.
     pugi::xpath_query* GetXPathQuery() const { return query_; }
+
     /// Return pugixml xpath_variable_set.
     pugi::xpath_variable_set* GetXPathVariableSet() const { return variables_; }
 

@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,52 +20,53 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Audio/Audio.h"
-#include "../Engine/Console.h"
 #include "../Core/Context.h"
 #include "../Core/CoreEvents.h"
-#include "../Engine/DebugHud.h"
+#include "../Core/EventProfiler.h"
+#include "../Core/ProcessUtils.h"
+#include "../Core/WorkQueue.h"
 #include "../Engine/Engine.h"
-#include "../IO/FileSystem.h"
 #include "../Graphics/Graphics.h"
+#include "../Graphics/Renderer.h"
 #include "../Input/Input.h"
-#include "../Input/InputEvents.h"
+#include "../IO/FileSystem.h"
 #include "../IO/Log.h"
+#include "../IO/PackageFile.h"
+
+// ATOMIC BEGIN
+#include "../Resource/XMLFile.h"
+// ATOMIC END
+
 #ifdef ATOMIC_NAVIGATION
 #include "../Navigation/NavigationMesh.h"
 #endif
 #ifdef ATOMIC_NETWORK
 #include "../Network/Network.h"
 #endif
-#include "../IO/PackageFile.h"
+#ifdef ATOMIC_DATABASE
+#include "../Database/Database.h"
+#endif
 #ifdef ATOMIC_PHYSICS
 #include "../Physics/PhysicsWorld.h"
 #endif
-#include "../Core/ProcessUtils.h"
-#include "../Core/Profiler.h"
-#include "../Graphics/Renderer.h"
 #include "../Resource/ResourceCache.h"
+#include "../Resource/Localization.h"
 #include "../Scene/Scene.h"
 #include "../Scene/SceneEvents.h"
+#include "../UI/UI.h"
 #ifdef ATOMIC_ATOMIC2D
 #include "../Atomic2D/Atomic2D.h"
 #endif
-#ifdef ATOMIC_3D
-#include "../Atomic3D/Atomic3D.h"
-#endif
 
-#ifdef ATOMIC_TBUI
-#include "../UI/UI.h"
-#endif
-#include "../Core/WorkQueue.h"
-#include "../Resource/XMLFile.h"
-
-#if defined(EMSCRIPTEN) && defined(URHO3D_TESTING)
-#include <emscripten.h>
+#if defined(__EMSCRIPTEN__) && defined(ATOMIC_TESTING)
+#include <emscripten/emscripten.h>
 #endif
 
 #include "../DebugNew.h"
+
 
 #if defined(_MSC_VER) && defined(_DEBUG)
 // From dbgint.h
@@ -94,15 +95,15 @@ Engine::Engine(Context* context) :
     timeStep_(0.0f),
     timeStepSmoothing_(2),
     minFps_(10),
-    #if defined(ANDROID) || defined(IOS) || defined(RPI)
+#if defined(IOS) || defined(__ANDROID__) || defined(__arm__) || defined(__aarch64__)
     maxFps_(60),
     maxInactiveFps_(10),
     pauseMinimized_(true),
-    #else
+#else
     maxFps_(200),
     maxInactiveFps_(60),
     pauseMinimized_(false),
-    #endif
+#endif
 #ifdef ATOMIC_TESTING
     timeOut_(0),
 #endif
@@ -118,23 +119,24 @@ Engine::Engine(Context* context) :
     // Create subsystems which do not depend on engine initialization or startup parameters
     context_->RegisterSubsystem(new Time(context_));
     context_->RegisterSubsystem(new WorkQueue(context_));
-    #ifdef ATOMIC_PROFILING
+#ifdef ATOMIC_PROFILING
     context_->RegisterSubsystem(new Profiler(context_));
-    #endif
+#endif
     context_->RegisterSubsystem(new FileSystem(context_));
-    #ifdef ATOMIC_LOGGING
+#ifdef ATOMIC_LOGGING
     context_->RegisterSubsystem(new Log(context_));
-    #endif
+#endif
     context_->RegisterSubsystem(new ResourceCache(context_));
-    #ifdef ATOMIC_NETWORK
+    context_->RegisterSubsystem(new Localization(context_));
+#ifdef ATOMIC_NETWORK
     context_->RegisterSubsystem(new Network(context_));
-    #endif
+#endif
+#ifdef ATOMIC_DATABASE
+    context_->RegisterSubsystem(new Database(context_));
+#endif
     context_->RegisterSubsystem(new Input(context_));
     context_->RegisterSubsystem(new Audio(context_));
-
-    #ifdef ATOMIC_TBUI
     context_->RegisterSubsystem(new UI(context_));
-    #endif
 
     // Register object factories for libraries which are not automatically registered along with subsystem creation
     RegisterSceneLibrary(context_);
@@ -142,12 +144,12 @@ Engine::Engine(Context* context) :
 #ifdef ATOMIC_PHYSICS
     RegisterPhysicsLibrary(context_);
 #endif
-    
+
 #ifdef ATOMIC_NAVIGATION
     RegisterNavigationLibrary(context_);
 #endif
 
-    SubscribeToEvent(E_EXITREQUESTED, HANDLER(Engine, HandleExitRequested));
+    SubscribeToEvent(E_EXITREQUESTED, ATOMIC_HANDLER(Engine, HandleExitRequested));
 }
 
 Engine::~Engine()
@@ -159,7 +161,7 @@ bool Engine::Initialize(const VariantMap& parameters)
     if (initialized_)
         return true;
 
-    PROFILE(InitEngine);
+    ATOMIC_PROFILE(InitEngine);
 
     // Set headless mode
     headless_ = GetParameter(parameters, "Headless", false).GetBool();
@@ -168,18 +170,12 @@ bool Engine::Initialize(const VariantMap& parameters)
     if (!headless_)
     {
         context_->RegisterSubsystem(new Graphics(context_));
-#ifdef ATOMIC_3D
-        RegisterAtomic3DLibrary(context_);
-#endif
         context_->RegisterSubsystem(new Renderer(context_));
     }
     else
     {
         // Register graphics library objects explicitly in headless mode to allow them to work without using actual GPU resources
         RegisterGraphicsLibrary(context_);
-#ifdef ATOMIC_3D
-        RegisterAtomic3DLibrary(context_);
-#endif
     }
 
 #ifdef ATOMIC_ATOMIC2D
@@ -206,120 +202,156 @@ bool Engine::Initialize(const VariantMap& parameters)
 
     // Set amount of worker threads according to the available physical CPU cores. Using also hyperthreaded cores results in
     // unpredictable extra synchronization overhead. Also reserve one core for the main thread
+#ifdef ATOMIC_THREADING
     unsigned numThreads = GetParameter(parameters, "WorkerThreads", true).GetBool() ? GetNumPhysicalCPUs() - 1 : 0;
     if (numThreads)
     {
         GetSubsystem<WorkQueue>()->CreateThreads(numThreads);
 
-        LOGINFOF("Created %u worker thread%s", numThreads, numThreads > 1 ? "s" : "");
+        ATOMIC_LOGINFOF("Created %u worker thread%s", numThreads, numThreads > 1 ? "s" : "");
     }
+#endif
 
     // Add resource paths
     ResourceCache* cache = GetSubsystem<ResourceCache>();
     FileSystem* fileSystem = GetSubsystem<FileSystem>();
 
-    String resourcePrefixPath = AddTrailingSlash(GetParameter(parameters, "ResourcePrefixPath", getenv("ATOMIC_PREFIX_PATH")).GetString());
-    if (resourcePrefixPath.Empty())
-        resourcePrefixPath = fileSystem->GetProgramDir();
-    else if (!IsAbsolutePath(resourcePrefixPath))
-        resourcePrefixPath = fileSystem->GetProgramDir() + resourcePrefixPath;
-    Vector<String> resourcePaths = GetParameter(parameters, "ResourcePaths", "CoreData").GetString().Split(';');
+    Vector<String> resourcePrefixPaths = GetParameter(parameters, "ResourcePrefixPaths", String::EMPTY).GetString().Split(';', true);
+    for (unsigned i = 0; i < resourcePrefixPaths.Size(); ++i)
+        resourcePrefixPaths[i] = AddTrailingSlash(
+            IsAbsolutePath(resourcePrefixPaths[i]) ? resourcePrefixPaths[i] : fileSystem->GetProgramDir() + resourcePrefixPaths[i]);
+    Vector<String> resourcePaths = GetParameter(parameters, "ResourcePaths", "Data;CoreData").GetString().Split(';');
     Vector<String> resourcePackages = GetParameter(parameters, "ResourcePackages").GetString().Split(';');
     Vector<String> autoLoadPaths = GetParameter(parameters, "AutoloadPaths", "Autoload").GetString().Split(';');
 
     for (unsigned i = 0; i < resourcePaths.Size(); ++i)
     {
-        bool success = false;
-
         // If path is not absolute, prefer to add it as a package if possible
         if (!IsAbsolutePath(resourcePaths[i]))
         {
-            String packageName = resourcePrefixPath + resourcePaths[i] + ".pak";
-            if (fileSystem->FileExists(packageName))
-                success = cache->AddPackageFile(packageName);
-
-            if (!success)
+            unsigned j = 0;
+            for (; j < resourcePrefixPaths.Size(); ++j)
             {
-                String pathName = resourcePrefixPath + resourcePaths[i];
+                // ATOMIC BEGIN
+                String packageName = resourcePrefixPaths[j] + resourcePaths[i] + PAK_EXTENSION;
+                // ATOMIC END
+
+                if (fileSystem->FileExists(packageName))
+                {
+                    if (cache->AddPackageFile(packageName))
+                        break;
+                    else
+                        return false;   // The root cause of the error should have already been logged
+                }
+                String pathName = resourcePrefixPaths[j] + resourcePaths[i];
                 if (fileSystem->DirExists(pathName))
-                    success = cache->AddResourceDir(pathName);
+                {
+                    if (cache->AddResourceDir(pathName))
+                        break;
+                    else
+                        return false;
+                }
+            }
+
+            // ATOMIC: Only fail when CoreData can't be opened and not headless
+            if (j == resourcePrefixPaths.Size() && !headless_)
+            {
+                ATOMIC_LOGERRORF(
+                    "Failed to add resource path '%s', check the documentation on how to set the 'resource prefix path'",
+                    resourcePaths[i].CString());
+                return false;
             }
         }
         else
         {
             String pathName = resourcePaths[i];
             if (fileSystem->DirExists(pathName))
-                success = cache->AddResourceDir(pathName);
-        }
-
-        if (!success)
-        {
-            LOGERRORF("Failed to add resource path '%s', check the documentation on how to set the 'resource prefix path'", resourcePaths[i].CString());
-            return false;
+                if (!cache->AddResourceDir(pathName))
+                    return false;
         }
     }
 
     // Then add specified packages
     for (unsigned i = 0; i < resourcePackages.Size(); ++i)
     {
-        String packageName = resourcePrefixPath + resourcePackages[i];
-        if (fileSystem->FileExists(packageName))
+        unsigned j = 0;
+        for (; j < resourcePrefixPaths.Size(); ++j)
         {
-            if (!cache->AddPackageFile(packageName))
+            String packageName = resourcePrefixPaths[j] + resourcePackages[i];
+            if (fileSystem->FileExists(packageName))
             {
-                LOGERRORF("Failed to add resource package '%s', check the documentation on how to set the 'resource prefix path'", resourcePackages[i].CString());
-                return false;
+                if (cache->AddPackageFile(packageName))
+                    break;
+                else
+                    return false;
             }
         }
-        else
-            LOGDEBUGF("Skip specified resource package '%s' as it does not exist, check the documentation on how to set the 'resource prefix path'", resourcePackages[i].CString());
+        // ATOMIC: Only fail when CoreData can't be opened and not headless
+        if (j == resourcePrefixPaths.Size() && !headless_)
+        {
+            ATOMIC_LOGERRORF(
+                "Failed to add resource package '%s', check the documentation on how to set the 'resource prefix path'",
+                resourcePackages[i].CString());
+            return false;
+        }
     }
 
     // Add auto load folders. Prioritize these (if exist) before the default folders
     for (unsigned i = 0; i < autoLoadPaths.Size(); ++i)
     {
-        String autoLoadPath(autoLoadPaths[i]);
-        if (!IsAbsolutePath(autoLoadPath))
-            autoLoadPath = resourcePrefixPath + autoLoadPath;
+        bool autoLoadPathExist = false;
 
-        if (fileSystem->DirExists(autoLoadPath))
+        for (unsigned j = 0; j < resourcePrefixPaths.Size(); ++j)
         {
-            // Add all the subdirs (non-recursive) as resource directory
-            Vector<String> subdirs;
-            fileSystem->ScanDir(subdirs, autoLoadPath, "*", SCAN_DIRS, false);
-            for (unsigned y = 0; y < subdirs.Size(); ++y)
-            {
-                String dir = subdirs[y];
-                if (dir.StartsWith("."))
-                    continue;
+            String autoLoadPath(autoLoadPaths[i]);
+            if (!IsAbsolutePath(autoLoadPath))
+                autoLoadPath = resourcePrefixPaths[j] + autoLoadPath;
 
-                String autoResourceDir = autoLoadPath + "/" + dir;
-                if (!cache->AddResourceDir(autoResourceDir, 0))
+            if (fileSystem->DirExists(autoLoadPath))
+            {
+                autoLoadPathExist = true;
+
+                // Add all the subdirs (non-recursive) as resource directory
+                Vector<String> subdirs;
+                fileSystem->ScanDir(subdirs, autoLoadPath, "*", SCAN_DIRS, false);
+                for (unsigned y = 0; y < subdirs.Size(); ++y)
                 {
-                    LOGERRORF("Failed to add resource directory '%s' in autoload path %s, check the documentation on how to set the 'resource prefix path'", dir.CString(), autoLoadPaths[i].CString());
-                    return false;
+                    String dir = subdirs[y];
+                    if (dir.StartsWith("."))
+                        continue;
+
+                    String autoResourceDir = autoLoadPath + "/" + dir;
+                    if (!cache->AddResourceDir(autoResourceDir, 0))
+                        return false;
                 }
-            }
 
-            // Add all the found package files (non-recursive)
-            Vector<String> paks;
-            fileSystem->ScanDir(paks, autoLoadPath, "*.pak", SCAN_FILES, false);
-            for (unsigned y = 0; y < paks.Size(); ++y)
-            {
-                String pak = paks[y];
-                if (pak.StartsWith("."))
-                    continue;
-
-                String autoPackageName = autoLoadPath + "/" + pak;
-                if (!cache->AddPackageFile(autoPackageName, 0))
+                // Add all the found package files (non-recursive)
+                Vector<String> paks;
+                // ATOMIC BEGIN
+                fileSystem->ScanDir(paks, autoLoadPath, ToString("*.%s", PAK_EXTENSION), SCAN_FILES, false);
+                // ATOMIC END
+                for (unsigned y = 0; y < paks.Size(); ++y)
                 {
-                    LOGERRORF("Failed to add package file '%s' in autoload path %s, check the documentation on how to set the 'resource prefix path'", pak.CString(), autoLoadPaths[i].CString());
-                    return false;
+                    String pak = paks[y];
+                    if (pak.StartsWith("."))
+                        continue;
+
+                    String autoPackageName = autoLoadPath + "/" + pak;
+                    if (!cache->AddPackageFile(autoPackageName, 0))
+                        return false;
                 }
             }
         }
-        else
-            LOGDEBUGF("Skipped autoload path '%s' as it does not exist, check the documentation on how to set the 'resource prefix path'", autoLoadPaths[i].CString());
+
+        // The following debug message is confusing when user is not aware of the autoload feature
+        // Especially because the autoload feature is enabled by default without user intervention
+        // The following extra conditional check below is to suppress unnecessary debug log entry under such default situation
+        // The cleaner approach is to not enable the autoload by default, i.e. do not use 'Autoload' as default value for 'AutoloadPaths' engine parameter
+        // However, doing so will break the existing applications that rely on this
+        if (!autoLoadPathExist && (autoLoadPaths.Size() > 1 || autoLoadPaths[0] != "Autoload"))
+            ATOMIC_LOGDEBUGF(
+                "Skipped autoload path '%s' as it does not exist, check the documentation on how to set the 'resource prefix path'",
+                autoLoadPaths[i].CString());
     }
 
     // Initialize graphics & audio output
@@ -336,19 +368,23 @@ bool Engine::Initialize(const VariantMap& parameters)
         graphics->SetOrientations(GetParameter(parameters, "Orientations", "LandscapeLeft LandscapeRight").GetString());
 
         if (HasParameter(parameters, "WindowPositionX") && HasParameter(parameters, "WindowPositionY"))
-            graphics->SetWindowPosition(GetParameter(parameters, "WindowPositionX").GetInt(), GetParameter(parameters, "WindowPositionY").GetInt());
+            graphics->SetWindowPosition(GetParameter(parameters, "WindowPositionX").GetInt(),
+                GetParameter(parameters, "WindowPositionY").GetInt());
 
-        #ifdef URHO3D_OPENGL
+#ifdef ATOMIC_OPENGL
         if (HasParameter(parameters, "ForceGL2"))
             graphics->SetForceGL2(GetParameter(parameters, "ForceGL2").GetBool());
-        #endif
+#endif
 
         if (!graphics->SetMode(
-            GetParameter(parameters, "WindowWidth", 0).GetInt(),
-            GetParameter(parameters, "WindowHeight", 0).GetInt(),
+// ATOMIC BEGIN
+            GetParameter(parameters, "WindowMaximized", false).GetBool() ? 0 : GetParameter(parameters, "WindowWidth", 0).GetInt(),
+            GetParameter(parameters, "WindowMaximized", false).GetBool() ? 0 : GetParameter(parameters, "WindowHeight", 0).GetInt(),
+// ATOMIC END
             GetParameter(parameters, "FullScreen", true).GetBool(),
             GetParameter(parameters, "Borderless", false).GetBool(),
             GetParameter(parameters, "WindowResizable", false).GetBool(),
+            GetParameter(parameters, "HighDPI", false).GetBool(),
             GetParameter(parameters, "VSync", false).GetBool(),
             GetParameter(parameters, "TripleBuffer", false).GetBool(),
             GetParameter(parameters, "MultiSample", 1).GetInt()
@@ -357,30 +393,12 @@ bool Engine::Initialize(const VariantMap& parameters)
 
         if (HasParameter(parameters, "DumpShaders"))
             graphics->BeginDumpShaders(GetParameter(parameters, "DumpShaders", String::EMPTY).GetString());
-
-        //TODO: make this a preference
-        bool useDeferred = false;
-
-#if defined(ATOMIC_PLATFORM_OSX) || defined(ATOMIC_PLATFORM_WINDOWS)
-        useDeferred = graphics->GetDeferredSupport();
-#endif
-        if (useDeferred)
-        {
-            renderer->SetDefaultRenderPath(cache->GetResource<XMLFile>("RenderPaths/Deferred.xml"));
-        }
-        else
-        {
-            renderer->SetDefaultRenderPath(cache->GetResource<XMLFile>("RenderPaths/Forward.xml"));
-        }
-
-        /*
         if (HasParameter(parameters, "RenderPath"))
             renderer->SetDefaultRenderPath(cache->GetResource<XMLFile>(GetParameter(parameters, "RenderPath").GetString()));
-        */
 
         renderer->SetDrawShadows(GetParameter(parameters, "Shadows", true).GetBool());
         if (renderer->GetDrawShadows() && GetParameter(parameters, "LowQualityShadows", false).GetBool())
-            renderer->SetShadowQuality(SHADOWQUALITY_LOW_16BIT);
+            renderer->SetShadowQuality(SHADOWQUALITY_SIMPLE_16BIT);
         renderer->SetMaterialQuality(GetParameter(parameters, "MaterialQuality", QUALITY_HIGH).GetInt());
         renderer->SetTextureQuality(GetParameter(parameters, "TextureQuality", QUALITY_HIGH).GetInt());
         renderer->SetTextureFilterMode((TextureFilterMode)GetParameter(parameters, "TextureFilterMode", FILTER_TRILINEAR).GetInt());
@@ -404,24 +422,21 @@ bool Engine::Initialize(const VariantMap& parameters)
     if (HasParameter(parameters, "TouchEmulation"))
         GetSubsystem<Input>()->SetTouchEmulation(GetParameter(parameters, "TouchEmulation").GetBool());
 
-    #ifdef ATOMIC_TESTING
+#ifdef ATOMIC_TESTING
     if (HasParameter(parameters, "TimeOut"))
         timeOut_ = GetParameter(parameters, "TimeOut", 0).GetInt() * 1000000LL;
-    #endif
+#endif
 
-    // In debug mode, check now that all factory created objects can be created without crashing
-    #ifdef _DEBUG
-    if (!resourcePaths.Empty())
+#ifdef ATOMIC_PROFILING
+    if (GetParameter(parameters, "EventProfiler", true).GetBool())
     {
-        const HashMap<StringHash, SharedPtr<ObjectFactory> >& factories = context_->GetObjectFactories();
-        for (HashMap<StringHash, SharedPtr<ObjectFactory> >::ConstIterator i = factories.Begin(); i != factories.End(); ++i)
-            SharedPtr<Object> object = i->second_->CreateObject();
+        context_->RegisterSubsystem(new EventProfiler(context_));
+        EventProfiler::SetActive(true);
     }
-    #endif
-
+#endif
     frameTimer_.Reset();
 
-    LOGINFO("Initialized engine");
+    ATOMIC_LOGINFO("Initialized engine");
     initialized_ = true;
     return true;
 }
@@ -442,6 +457,15 @@ void Engine::RunFrame()
     Time* time = GetSubsystem<Time>();
     Input* input = GetSubsystem<Input>();
     Audio* audio = GetSubsystem<Audio>();
+
+#ifdef ATOMIC_PROFILING
+    if (EventProfiler::IsActive())
+    {
+        EventProfiler* eventProfiler = GetSubsystem<EventProfiler>();
+        if (eventProfiler)
+            eventProfiler->BeginFrame();
+    }
+#endif
 
     time->BeginFrame(timeStep_);
 
@@ -474,8 +498,8 @@ void Engine::RunFrame()
 
 Console* Engine::CreateConsole()
 {
-    return 0;
-    /*
+// ATOMIC BEGIN
+/*
     if (headless_ || !initialized_)
         return 0;
 
@@ -488,18 +512,21 @@ Console* Engine::CreateConsole()
     }
 
     return console;
-    */
+*/
+// ATOMIC END
+
+    return 0;
 }
 
 DebugHud* Engine::CreateDebugHud()
 {
-    return 0;
+// ATOMIC BEGIN
 
-    /*
+/*
     if (headless_ || !initialized_)
         return 0;
 
-     // Return existing debug HUD if possible
+    // Return existing debug HUD if possible
     DebugHud* debugHud = GetSubsystem<DebugHud>();
     if (!debugHud)
     {
@@ -508,27 +535,31 @@ DebugHud* Engine::CreateDebugHud()
     }
 
     return debugHud;
-    */
+*/
+// ATOMIC END
+
+    return 0;
+
 }
 
 void Engine::SetTimeStepSmoothing(int frames)
 {
-    timeStepSmoothing_ = Clamp(frames, 1, 20);
+    timeStepSmoothing_ = (unsigned)Clamp(frames, 1, 20);
 }
 
 void Engine::SetMinFps(int fps)
 {
-    minFps_ = Max(fps, 0);
+    minFps_ = (unsigned)Max(fps, 0);
 }
 
 void Engine::SetMaxFps(int fps)
 {
-    maxFps_ = Max(fps, 0);
+    maxFps_ = (unsigned)Max(fps, 0);
 }
 
 void Engine::SetMaxInactiveFps(int fps)
 {
-    maxInactiveFps_ = Max(fps, 0);
+    maxInactiveFps_ = (unsigned)Max(fps, 0);
 }
 
 void Engine::SetPauseMinimized(bool enable)
@@ -539,7 +570,7 @@ void Engine::SetPauseMinimized(bool enable)
 void Engine::SetAutoExit(bool enable)
 {
     // On mobile platforms exit is mandatory if requested by the platform itself and should not be attempted to be disabled
-#if defined(ANDROID) || defined(IOS)
+#if defined(__ANDROID__) || defined(IOS)
     enable = true;
 #endif
     autoExit_ = enable;
@@ -561,60 +592,46 @@ void Engine::Exit()
 
 void Engine::DumpProfiler()
 {
+#ifdef ATOMIC_LOGGING
+    if (!Thread::IsMainThread())
+        return;
+
     Profiler* profiler = GetSubsystem<Profiler>();
     if (profiler)
-        LOGRAW(profiler->GetData(true, true) + "\n");
+        ATOMIC_LOGRAW(profiler->PrintData(true, true) + "\n");
+#endif
 }
 
 void Engine::DumpResources(bool dumpFileName)
 {
-    #ifdef ATOMIC_LOGGING
+#ifdef ATOMIC_LOGGING
+    if (!Thread::IsMainThread())
+        return;
+
     ResourceCache* cache = GetSubsystem<ResourceCache>();
     const HashMap<StringHash, ResourceGroup>& resourceGroups = cache->GetAllResources();
-    LOGRAW("\n");
-    
     if (dumpFileName)
     {
-        LOGRAW("Used resources:\n");
-    }
-    
-    for (HashMap<StringHash, ResourceGroup>::ConstIterator i = resourceGroups.Begin();
-        i != resourceGroups.End(); ++i)
-    {
-        const HashMap<StringHash, SharedPtr<Resource> >& resources = i->second_.resources_;
-        if (dumpFileName)
+        ATOMIC_LOGRAW("Used resources:\n");
+        for (HashMap<StringHash, ResourceGroup>::ConstIterator i = resourceGroups.Begin(); i != resourceGroups.End(); ++i)
         {
-            for (HashMap<StringHash, SharedPtr<Resource> >::ConstIterator j = resources.Begin();
-                j != resources.End(); ++j)
+            const HashMap<StringHash, SharedPtr<Resource> >& resources = i->second_.resources_;
+            if (dumpFileName)
             {
-                LOGRAW(j->second_->GetName() + "\n");
-            }
-
-        }
-        else
-        {
-            unsigned num = resources.Size();
-            unsigned memoryUse = i->second_.memoryUse_;
-
-            if (num)
-            {
-                LOGRAW("Resource type " + resources.Begin()->second_->GetTypeName() +
-                    ": count " + String(num) + " memory use " + String(memoryUse) + "\n");
+                for (HashMap<StringHash, SharedPtr<Resource> >::ConstIterator j = resources.Begin(); j != resources.End(); ++j)
+                    ATOMIC_LOGRAW(j->second_->GetName() + "\n");
             }
         }
     }
-
-    if (!dumpFileName)
-    {
-        LOGRAW("Total memory use of all resources " + String(cache->GetTotalMemoryUse()) + "\n\n");
-    }
-    #endif
+    else
+        ATOMIC_LOGRAW(cache->PrintMemoryUsage() + "\n");
+#endif
 }
 
 void Engine::DumpMemory()
 {
-    #ifdef ATOMIC_LOGGING
-    #if defined(_MSC_VER) && defined(_DEBUG)
+#ifdef ATOMIC_LOGGING
+#if defined(_MSC_VER) && defined(_DEBUG)
     _CrtMemState state;
     _CrtMemCheckpoint(&state);
     _CrtMemBlockHeader* block = state.pBlockHeader;
@@ -634,9 +651,9 @@ void Engine::DumpMemory()
         if (block->nBlockUse > 0)
         {
             if (block->szFileName)
-                LOGRAW("Block " + String((int)block->lRequest) + ": " + String(block->nDataSize) + " bytes, file " + String(block->szFileName) + " line " + String(block->nLine) + "\n");
+                ATOMIC_LOGRAW("Block " + String((int)block->lRequest) + ": " + String(block->nDataSize) + " bytes, file " + String(block->szFileName) + " line " + String(block->nLine) + "\n");
             else
-                LOGRAW("Block " + String((int)block->lRequest) + ": " + String(block->nDataSize) + " bytes\n");
+                ATOMIC_LOGRAW("Block " + String((int)block->lRequest) + ": " + String(block->nDataSize) + " bytes\n");
 
             total += block->nDataSize;
             ++blocks;
@@ -644,16 +661,16 @@ void Engine::DumpMemory()
         block = block->pBlockHeaderPrev;
     }
 
-    LOGRAW("Total allocated memory " + String(total) + " bytes in " + String(blocks) + " blocks\n\n");
-    #else
-    LOGRAW("DumpMemory() supported on MSVC debug mode only\n\n");
-    #endif
-    #endif
+    ATOMIC_LOGRAW("Total allocated memory " + String(total) + " bytes in " + String(blocks) + " blocks\n\n");
+#else
+    ATOMIC_LOGRAW("DumpMemory() supported on MSVC debug mode only\n\n");
+#endif
+#endif
 }
 
 void Engine::Update()
 {
-    PROFILE(Update);
+    ATOMIC_PROFILE(Update);
 
     // Logic update event
     using namespace Update;
@@ -677,7 +694,7 @@ void Engine::Render()
     if (headless_)
         return;
 
-    PROFILE(Render);
+    ATOMIC_PROFILE(Render);
 
     // If device is lost, BeginFrame will fail and we skip rendering
     Graphics* graphics = GetSubsystem<Graphics>();
@@ -685,11 +702,7 @@ void Engine::Render()
         return;
 
     GetSubsystem<Renderer>()->Render();
-
-#ifdef ATOMIC_TBUI
     GetSubsystem<UI>()->Render();
-#endif
-
     graphics->EndFrame();
 }
 
@@ -698,17 +711,24 @@ void Engine::ApplyFrameLimit()
     if (!initialized_)
         return;
 
-    int maxFps = maxFps_;
+    unsigned maxFps = maxFps_;
     Input* input = GetSubsystem<Input>();
     if (input && !input->HasFocus())
         maxFps = Min(maxInactiveFps_, maxFps);
 
     long long elapsed = 0;
 
+#ifndef __EMSCRIPTEN__
     // Perform waiting loop if maximum FPS set
+#ifndef IOS
     if (maxFps)
+#else
+    // If on iOS and target framerate is 60 or above, just let the animation callback handle frame timing
+    // instead of waiting ourselves
+    if (maxFps < 60)
+#endif
     {
-        PROFILE(ApplyFrameLimit);
+        ATOMIC_PROFILE(ApplyFrameLimit);
 
         long long targetMax = 1000000LL / maxFps;
 
@@ -726,16 +746,17 @@ void Engine::ApplyFrameLimit()
             }
         }
     }
+#endif
 
     elapsed = frameTimer_.GetUSec(true);
-    #ifdef ATOMIC_TESTING
+#ifdef ATOMIC_TESTING
     if (timeOut_ > 0)
     {
         timeOut_ -= elapsed;
         if (timeOut_ <= 0)
             Exit();
     }
-    #endif
+#endif
 
     // If FPS lower than minimum, clamp elapsed time
     if (minFps_)
@@ -763,6 +784,10 @@ void Engine::ApplyFrameLimit()
 VariantMap Engine::ParseParameters(const Vector<String>& arguments)
 {
     VariantMap ret;
+
+    // Pre-initialize the parameters with environment variable values when they are set
+    if (const char* paths = getenv("ATOMIC_PREFIX_PATH"))
+        ret["ResourcePrefixPaths"] = paths;
 
     for (unsigned i = 0; i < arguments.Size(); ++i)
     {
@@ -810,16 +835,18 @@ VariantMap Engine::ParseParameters(const Vector<String>& arguments)
                 ret["TripleBuffer"] = true;
             else if (argument == "w")
                 ret["FullScreen"] = false;
-            else if (argument == "s")
-                ret["WindowResizable"] = true;
             else if (argument == "borderless")
                 ret["Borderless"] = true;
+            else if (argument == "s")
+                ret["WindowResizable"] = true;
+            else if (argument == "hd")
+                ret["HighDPI"] = true;
             else if (argument == "q")
                 ret["LogQuiet"] = true;
             else if (argument == "log" && !value.Empty())
             {
-                int logLevel = GetStringListIndex(value.CString(), logLevelPrefixes, -1);
-                if (logLevel != -1)
+                unsigned logLevel = GetStringListIndex(value.CString(), logLevelPrefixes, M_MAX_UNSIGNED);
+                if (logLevel != M_MAX_UNSIGNED)
                 {
                     ret["LogLevel"] = logLevel;
                     ++i;
@@ -852,7 +879,7 @@ VariantMap Engine::ParseParameters(const Vector<String>& arguments)
             }
             else if (argument == "pp" && !value.Empty())
             {
-                ret["ResourcePrefixPath"] = value;
+                ret["ResourcePrefixPaths"] = value;
                 ++i;
             }
             else if (argument == "p" && !value.Empty())
@@ -898,13 +925,20 @@ VariantMap Engine::ParseParameters(const Vector<String>& arguments)
             }
             else if (argument == "touch")
                 ret["TouchEmulation"] = true;
-            #ifdef ATOMIC_TESTING
+            // ATOMIC BEGIN
+            else if (argument == "logname" && !value.Empty())
+            {
+                ret["LogName"] = value;
+                ++i;
+            }
+            // ATOMIC END
+#ifdef ATOMIC_TESTING
             else if (argument == "timeout" && !value.Empty())
             {
                 ret["TimeOut"] = ToInt(value);
                 ++i;
             }
-            #endif
+#endif
         }
     }
 
@@ -941,9 +975,22 @@ void Engine::DoExit()
         graphics->Close();
 
     exiting_ = true;
-    #if defined(EMSCRIPTEN) && defined(URHO3D_TESTING)
+#if defined(__EMSCRIPTEN__) && defined(ATOMIC_TESTING)
     emscripten_force_exit(EXIT_SUCCESS);    // Some how this is required to signal emrun to stop
-    #endif
+#endif
 }
+
+// ATOMIC BEGIN
+
+bool Engine::GetDebugBuild() const
+{
+#ifdef ATOMIC_DEBUG
+    return true;
+#else
+    return false;
+#endif
+}
+
+// ATOMIC END
 
 }

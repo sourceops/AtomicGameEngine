@@ -1,3 +1,24 @@
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include "JSBFunction.h"
 
@@ -48,4 +69,47 @@ void JSBFunction::Process()
         class_->AddPropertyFunction(this);
 
 }
+
+bool JSBFunction::Match(JSBFunction* func)
+{
+    if (func->Skip() || func->GetName() != name_)
+        return false;
+
+    if (!returnType_)
+    {
+        if (func->GetReturnType())
+            return false;
+    }
+    else
+    {
+        if (!returnType_->Match(func->GetReturnType()))
+            return false;
+    }
+
+    Vector<JSBFunctionType*>& fparams = func->GetParameters();
+
+    if (parameters_.Size() != fparams.Size())
+        return false;
+
+    for ( unsigned j = 0; j < fparams.Size(); j++)
+    {
+        if (!parameters_[j]->Match(fparams[j]))
+            return false;
+    }
+
+    return true;
+}
+
+JSBClass* JSBFunction::GetReturnClass()
+{
+    if (!returnType_)
+        return 0;
+
+    if (!returnType_->type_->asClassType())
+        return 0;
+
+    return returnType_->type_->asClassType()->class_;
+
+}
+
 }

@@ -1,6 +1,24 @@
+//
 // Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include <Duktape/duktape.h>
 
@@ -21,27 +39,46 @@
 #include "JSAtomic.h"
 #include "JSUI.h"
 #include "JSMetrics.h"
+#include "JSEventHelper.h"
 
 namespace Atomic
 {
 
 JSVM* JSVM::instance_ = NULL;
+Vector<JSVM::JSAPIPackageRegistration*> JSVM::packageRegistrations_;
 
 JSVM::JSVM(Context* context) :
     Object(context),
     ctx_(0),
-    gcTime_(0.0f)
+    gcTime_(0.0f),
+    stashCount_(0),
+    totalStashCount_(0),
+    totalUnstashCount_(0)
 {
     assert(!instance_);
 
     instance_ = this;
 
     metrics_ = new JSMetrics(context, this);
+
+    SharedPtr<JSEventDispatcher> dispatcher(new JSEventDispatcher(context_));
+    context_->RegisterSubsystem(dispatcher);
+    context_->AddGlobalEventListener(dispatcher);
+    RefCounted::AddRefCountChangedFunction(OnRefCountChanged);
+
 }
 
 JSVM::~JSVM()
 {
+    context_->RemoveGlobalEventListener(context_->GetSubsystem<JSEventDispatcher>());
+    context_->RemoveSubsystem(JSEventDispatcher::GetTypeStatic());
+
     duk_destroy_heap(ctx_);
+
+    RefCounted::RemoveRefCountChangedFunction(OnRefCountChanged);
+
+    // assert(stashCount_ == 0);
+
     instance_ = NULL;
 }
 
@@ -49,40 +86,157 @@ void JSVM::InitJSContext()
 {
     ctx_ = duk_create_heap_default();
 
-    // create root Atomic Object
-    duk_push_global_object(ctx_);
-    duk_push_object(ctx_);
-    duk_put_prop_string(ctx_, -2, "Atomic");
-    duk_pop(ctx_);
+    jsapi_init_atomic(this);
 
-    duk_push_global_stash(ctx_);
-    duk_push_object(ctx_);
-    duk_put_prop_index(ctx_, -2, JS_GLOBALSTASH_INDEX_COMPONENTS);
+    // register whether we are in the editor
+    duk_get_global_string(ctx_, "Atomic");
+    duk_push_boolean(ctx_, context_->GetEditorContext() ? 1 : 0);
+    duk_put_prop_string(ctx_, -2, "editor");
     duk_pop(ctx_);
 
     js_init_require(this);
     js_init_jsplugin(this);
-    jsapi_init_atomic(this);
-
-    InitComponents();
 
     ui_ = new JSUI(context_);
+
+    InitializePackages();
 
     // handle this elsewhere?
     SubscribeToEvents();
 
 }
 
+void JSVM::InitializePackages()
+{   
+    for (unsigned i = 0; i < packageRegistrations_.Size(); i++)
+    {
+        JSAPIPackageRegistration* pkgReg = packageRegistrations_.At(i);
+
+        if (pkgReg->registrationFunction)
+        {
+            pkgReg->registrationFunction(this);
+        }
+        else
+        {
+            pkgReg->registrationSettingsFunction(this, pkgReg->settings);
+        }
+
+        delete pkgReg;
+    }
+
+    packageRegistrations_.Clear();
+    
+}
+
+void JSVM::RegisterPackage(JSVMPackageRegistrationFunction regFunction)
+{
+    packageRegistrations_.Push(new JSAPIPackageRegistration(regFunction));
+}
+
+void JSVM::RegisterPackage(JSVMPackageRegistrationSettingsFunction regFunction, const VariantMap& settings)
+{
+    packageRegistrations_.Push(new JSAPIPackageRegistration(regFunction, settings));
+}
 
 void JSVM::SubscribeToEvents()
 {
-    SubscribeToEvent(E_UPDATE, HANDLER(JSVM, HandleUpdate));
+    SubscribeToEvent(E_UPDATE, ATOMIC_HANDLER(JSVM, HandleUpdate));
 }
+
+void JSVM::OnRefCountChanged(RefCounted* refCounted, int refCount)
+{
+    assert(instance_);
+    assert(refCounted->JSGetHeapPtr());
+
+    if (refCount == 1)
+    {
+        // only script reference is left, so unstash
+        instance_->Unstash(refCounted);
+    }
+    else if (refCount == 2)
+    {
+        // We are going from solely having a script reference to having another reference
+        instance_->Stash(refCounted);
+    }
+
+}
+
+void JSVM::Stash(RefCounted* refCounted)
+{
+    assert(refCounted);
+    assert(refCounted->JSGetHeapPtr());
+
+    totalStashCount_++;
+    stashCount_++;
+
+    duk_push_global_stash(ctx_);
+    duk_get_prop_index(ctx_, -1, JS_GLOBALSTASH_INDEX_REFCOUNTED_REGISTRY);
+    // can't use instance as key, as this coerces to [Object] for
+    // string property, pointer will be string representation of
+    // address, so, unique key
+
+/*
+    duk_push_pointer(ctx_, refCounted);
+    duk_get_prop(ctx_, -2);
+    assert(duk_is_undefined(ctx_, -1));
+    duk_pop(ctx_);
+*/
+
+    duk_push_pointer(ctx_, refCounted);
+    duk_push_heapptr(ctx_, refCounted->JSGetHeapPtr());
+    
+    duk_put_prop(ctx_, -3);
+    duk_pop_2(ctx_);
+
+}
+void JSVM::Unstash(RefCounted* refCounted)
+{
+    assert(refCounted);
+    assert(refCounted->JSGetHeapPtr());
+
+    assert(stashCount_ > 0);
+
+    stashCount_--;
+    totalUnstashCount_++;
+
+    duk_push_global_stash(ctx_);
+    duk_get_prop_index(ctx_, -1, JS_GLOBALSTASH_INDEX_REFCOUNTED_REGISTRY);
+    // can't use instance as key, as this coerces to [Object] for
+    // string property, pointer will be string representation of
+    // address, so, unique key
+
+/*
+    duk_push_pointer(ctx_, refCounted);
+    duk_get_prop(ctx_, -2);
+    assert(!duk_is_undefined(ctx_, -1));
+    duk_pop(ctx_);
+*/
+
+    duk_push_pointer(ctx_, refCounted);
+    duk_del_prop(ctx_, -2);   
+    duk_pop_2(ctx_);
+}
+
+// Returns if the given object is stashed
+bool JSVM::GetStashed(RefCounted* refcounted) const
+{
+    duk_push_global_stash(ctx_);
+    duk_get_prop_index(ctx_, -1, JS_GLOBALSTASH_INDEX_REFCOUNTED_REGISTRY);
+
+    duk_push_pointer(ctx_, refcounted);
+    duk_get_prop(ctx_, -2);
+
+    bool result = !duk_is_undefined(ctx_, -1);
+
+    duk_pop_3(ctx_);
+    return result;
+}
+
 
 void JSVM::HandleUpdate(StringHash eventType, VariantMap& eventData)
 {
 
-    PROFILE(JSVM_HandleUpdate);
+    ATOMIC_PROFILE(JSVM_HandleUpdate);
 
     using namespace Update;
 
@@ -92,7 +246,7 @@ void JSVM::HandleUpdate(StringHash eventType, VariantMap& eventData)
     gcTime_ += timeStep;
     if (gcTime_ > 5.0f)
     {
-        PROFILE(JSVM_GC);
+        ATOMIC_PROFILE(JSVM_GC);
 
         // run twice to call finalizers
         // see duktape docs
@@ -103,9 +257,11 @@ void JSVM::HandleUpdate(StringHash eventType, VariantMap& eventData)
 
         gcTime_ = 0;
 
+        // DumpJavascriptObjects();
+
     }
 
-    duk_get_global_string(ctx_, "__js_atomicgame_update");
+    duk_get_global_string(ctx_, "__js_atomic_main_update");
 
     if (duk_is_function(ctx_, -1))
     {
@@ -150,165 +306,6 @@ bool JSVM::ExecuteFunction(const String& functionName)
     }
 
     return false;
-
-}
-
-bool JSVM::GenerateComponent(const String &cname, const String &jsfilename, const String& csource)
-{
-
-    String source = "(function() {var start = null; var update = null; var fixedUpdate = null; var postUpdate = null;\n function __component_function(self) {\n";
-
-    source += csource.CString();
-
-    source += "self.node.components = self.node.components || {};\n";
-
-    source.AppendWithFormat("self.node.components[\"%s\"] = self.node.components[\"%s\"] || [];\n",
-                            cname.CString(), cname.CString());
-
-
-    source += "if (start instanceof Function) self.start = start; " \
-              "if (update instanceof Function) self.update = update; "\
-              "if (fixedUpdate instanceof Function) self.fixedUpdate = fixedUpdate; " \
-              "if (postUpdate instanceof Function) self.postUpdate = postUpdate;\n";
-
-    String scriptName = cname;
-    scriptName[0] = tolower(scriptName[0]);
-
-    source.AppendWithFormat("self.node.%s = self.node.%s || self;\n",
-                            scriptName.CString(), scriptName.CString());
-
-    source.AppendWithFormat("self.node.components[\"%s\"].push(self);\n",
-                            cname.CString());
-
-    source += "}\n return __component_function;\n});";
-
-    duk_push_string(ctx_, jsfilename.CString());
-
-    if (duk_eval_raw(ctx_, source.CString(), source.Length(),
-                     DUK_COMPILE_EVAL | DUK_COMPILE_NOSOURCE | DUK_COMPILE_SAFE) != 0)
-    {
-        if (duk_is_object(ctx_, -1))
-        {
-            SendJSErrorEvent(jsfilename);
-            duk_pop(ctx_);
-        }
-        else
-        {
-            assert(0);
-        }
-    }
-    else if (duk_pcall(ctx_, 0) != 0)
-    {
-        if (duk_is_object(ctx_, -1))
-        {
-            SendJSErrorEvent(jsfilename);
-            duk_pop(ctx_);
-        }
-        else
-        {
-            assert(0);
-        }
-    }
-    else
-    {
-        if (!duk_is_function(ctx_, -1))
-        {
-            const char* error = duk_to_string(ctx_, -1);
-            SendJSErrorEvent();
-        }
-
-        duk_put_prop_string(ctx_, -2, cname.CString());
-        return true;
-    }
-
-    return false;
-}
-
-void JSVM::InitPackageComponents()
-{
-    ResourceCache* cache = GetSubsystem<ResourceCache>();
-
-    duk_push_global_stash(ctx_);
-    duk_get_prop_index(ctx_, -1, JS_GLOBALSTASH_INDEX_COMPONENTS);
-
-    const Vector<SharedPtr<PackageFile> >& packageFiles = cache->GetPackageFiles();
-
-    for (unsigned i = 0; i < packageFiles.Size(); i++)
-    {
-        SharedPtr<PackageFile> package = packageFiles[i];
-        const Vector<String>& files =  package->GetCaseEntryNames();
-
-        for (unsigned j = 0; j < files.Size(); j++)
-        {
-            String name = files[j];
-            if (!name.StartsWith("Components/"))
-                continue;
-
-            String cname = GetFileName(name);
-            String jsname = name;
-
-            SharedPtr<File> jsfile(cache->GetFile(name));
-            String csource;
-            jsfile->ReadText(csource);
-
-            if (!GenerateComponent(cname, jsname, csource))
-                break;
-
-        }
-    }
-
-    // pop stash and component object
-    duk_pop_2(ctx_);
-
-}
-
-void JSVM::InitComponents()
-{
-    ResourceCache* cache = GetSubsystem<ResourceCache>();
-
-    // TODO: better way to detect player?
-    const Vector<SharedPtr<PackageFile> >& packageFiles = cache->GetPackageFiles();
-    for (unsigned i = 0; i < packageFiles.Size(); i++)
-    {
-        String packageName = packageFiles[i]->GetName();
-        if (packageName.Find("AtomicResources") != String::NPOS)
-        {
-            InitPackageComponents();
-            return;
-        }
-    }
-
-    FileSystem* fileSystem = GetSubsystem<FileSystem>();
-    const Vector<String>& dirs = cache->GetResourceDirs();
-
-    duk_push_global_stash(ctx_);
-    duk_get_prop_index(ctx_, -1, JS_GLOBALSTASH_INDEX_COMPONENTS);
-
-    for (unsigned i = 0; i < dirs.Size(); i++)
-    {
-        Vector<String> files;
-
-        fileSystem->ScanDir(files ,dirs[i]+"/Components", "*.js", SCAN_FILES, true );
-
-        for (unsigned j = 0; j < files.Size(); j++)
-        {
-            String cname = GetFileName(files[j]);
-            String jsname = dirs[i]+"Components/" + files[j];
-
-            SharedPtr<File> jsfile = cache->GetFile("Components/" + files[j]);
-
-            String csource;
-            jsfile->ReadText(csource);
-
-            if (!GenerateComponent(cname, jsname, csource))
-                break;
-
-        }
-
-    }
-
-    // pop stash and component object
-    duk_pop_2(ctx_);
 
 }
 
@@ -392,11 +389,82 @@ void JSVM::SendJSErrorEvent(const String& filename)
 
     duk_pop_n(ctx, 5);
 
-    LOGERRORF("JSErrorEvent: %s : Line %i\n Name: %s\n Message: %s\n Stack:%s",
+    ATOMIC_LOGERRORF("JSErrorEvent: %s : Line %i\n Name: %s\n Message: %s\n Stack:%s",
               filename.CString(), lineNumber, name.CString(), message.CString(), stack.CString());
 
     SendEvent(E_JSERROR, eventData);
 
+}
+
+int JSVM::GetRealLineNumber(const String& fileName, const int lineNumber) {
+
+    int realLineNumber = lineNumber;
+
+    String mapPath = fileName;
+
+    if (!mapPath.EndsWith(".js.map"))
+        mapPath += ".js.map";
+
+    if (mapPath.EndsWith(".js")) {
+        return realLineNumber;
+    }
+
+    ResourceCache* cache = GetSubsystem<ResourceCache>();
+
+    String path;
+    const Vector<String>& searchPaths = GetModuleSearchPaths();
+    for (unsigned i = 0; i < searchPaths.Size(); i++)
+    {
+        String checkPath = searchPaths[i] + mapPath;
+
+        if (cache->Exists(checkPath))
+        {
+            path = checkPath;
+            break;
+        }
+
+    }
+
+    if (!path.Length())
+        return realLineNumber;
+
+
+    SharedPtr<File> mapFile(GetSubsystem<ResourceCache>()->GetFile(path));
+
+    //if there's no source map file, maybe you use a pure js, so give an error, or maybe forgot to generate source-maps :(
+    if (mapFile.Null())
+    {
+        return realLineNumber;
+    }
+
+    String map;
+    mapFile->ReadText(map);
+    int top = duk_get_top(ctx_);
+    duk_get_global_string(ctx_, "require");
+    duk_push_string(ctx_, "AtomicEditor/JavaScript/Lib/jsutils");
+    if (duk_pcall(ctx_, 1))
+    {
+        printf("Error: %s\n", duk_safe_to_string(ctx_, -1));
+        duk_set_top(ctx_, top);
+        return false;
+    }
+
+    duk_get_prop_string(ctx_, -1, "getRealLineNumber");
+    duk_push_string(ctx_, map.CString());
+    duk_push_int(ctx_, lineNumber);
+    bool ok = true;
+    if (duk_pcall(ctx_, 2))
+    {
+        ok = false;
+        printf("Error: %s\n", duk_safe_to_string(ctx_, -1));
+    }
+    else
+    {
+        realLineNumber = duk_to_int(ctx_, -1);
+    }
+    duk_set_top(ctx_, top);
+
+    return realLineNumber;
 }
 
 bool JSVM::ExecuteScript(const String& scriptPath)
@@ -418,6 +486,7 @@ bool JSVM::ExecuteScript(const String& scriptPath)
     String source;
 
     file->ReadText(source);
+    source.Append('\n');
 
     duk_push_string(ctx_, file->GetFullPath().CString());
     if (duk_eval_raw(ctx_, source.CString(), 0,
@@ -443,10 +512,11 @@ bool JSVM::ExecuteFile(File *file)
     String source;
 
     file->ReadText(source);
+    source.Append('\n');
 
     duk_push_string(ctx_, file->GetFullPath().CString());
     if (duk_eval_raw(ctx_, source.CString(), 0,
-                     DUK_COMPILE_EVAL | DUK_COMPILE_SAFE | DUK_COMPILE_NOSOURCE | DUK_COMPILE_STRLEN) != 0)
+        DUK_COMPILE_EVAL | DUK_COMPILE_SAFE | DUK_COMPILE_NOSOURCE | DUK_COMPILE_STRLEN) != 0)
     {
         SendJSErrorEvent(file->GetFullPath());
 
@@ -468,14 +538,107 @@ void JSVM::GC()
 
 bool JSVM::ExecuteMain()
 {
-    SharedPtr<File> file (GetSubsystem<ResourceCache>()->GetFile("Scripts/main.js"));
+    if (!GetSubsystem<ResourceCache>()->Exists("Scripts/main.js"))
+        return true;
 
-    if (file.Null())
+
+    duk_get_global_string(ctx_, "require");
+    duk_push_string(ctx_, "Scripts/main");
+
+    if (duk_pcall(ctx_, 1) != 0)
     {
+        SendJSErrorEvent();
         return false;
     }
 
-    return ExecuteFile(file);
+    if (duk_is_object(ctx_, -1))
+    {
+        duk_get_prop_string(ctx_, -1, "update");
+
+        if (duk_is_function(ctx_, -1))
+        {
+            // store function for main loop
+            duk_put_global_string(ctx_, "__js_atomic_main_update");
+        }
+        else
+        {
+            duk_pop(ctx_);
+        }
+
+    }
+
+    // pop main module
+    duk_pop(ctx_);
+
+    return true;
+
+}
+
+void JSVM::DumpJavascriptObjects()
+{
+    ATOMIC_LOGINFOF("--- JS Objects ---");
+    ATOMIC_LOGINFOF("Stash Count: %u, Total Stash: %u, Total Unstash: %u", stashCount_, totalStashCount_, totalUnstashCount_);
+
+    HashMap<StringHash, String> strLookup;
+    HashMap<StringHash, unsigned> totalClassCount;
+    HashMap<StringHash, unsigned> stashedClassCount;
+    HashMap<StringHash, int> maxRefCount;
+
+    StringHash refCountedTypeHash("RefCounted");
+    strLookup[refCountedTypeHash] = "RefCounted";
+
+    duk_push_global_stash(ctx_);
+    duk_get_prop_index(ctx_, -1, JS_GLOBALSTASH_INDEX_REFCOUNTED_REGISTRY);
+
+    HashMap<void*, RefCounted*>::ConstIterator itr = heapToObject_.Begin();
+    while (itr != heapToObject_.End())
+    {
+        void* heapPtr = itr->first_;
+        RefCounted* refCounted = itr->second_;
+
+        // TODO: need a lookup for refcounted classid to typename
+        const String& className = refCounted->IsObject() ? ((Object*)refCounted)->GetTypeName() : "RefCounted";
+        StringHash typeHash = refCounted->IsObject() ? ((Object*)refCounted)->GetType() : refCountedTypeHash;
+
+        strLookup.InsertNew(typeHash, className);
+
+        totalClassCount.InsertNew(typeHash, 0);
+        totalClassCount[typeHash]++;
+
+        maxRefCount.InsertNew(typeHash, 0);
+        if (refCounted->Refs() > maxRefCount[typeHash])
+            maxRefCount[typeHash] = refCounted->Refs();
+
+        duk_push_pointer(ctx_, refCounted);
+        duk_get_prop(ctx_, -2);
+
+        if (!duk_is_undefined(ctx_, -1))
+        {
+            stashedClassCount.InsertNew(typeHash, 0);
+            stashedClassCount[typeHash]++;
+        }
+
+        duk_pop(ctx_);
+
+        itr++;
+
+    }
+
+    HashMap<StringHash, String>::ConstIterator itr2 = strLookup.Begin();
+    while (itr2 != strLookup.End())
+    {
+        StringHash typeHash = itr2->first_;
+        const String& className = itr2->second_;
+        unsigned totalCount = totalClassCount[typeHash];
+        unsigned stashedCount = stashedClassCount[typeHash];
+        int _maxRefCount = maxRefCount[typeHash];
+
+        ATOMIC_LOGINFOF("Classname: %s, Total: %u, Stashed: %u, Max Refs: %i", className.CString(), totalCount, stashedCount, _maxRefCount);
+
+        itr2++;
+    }
+
+    duk_pop_2(ctx_);
 
 }
 

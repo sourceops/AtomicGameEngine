@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,67 +22,62 @@
 
 #pragma once
 
-#include "../../Graphics/GPUObject.h"
-#include "../../Graphics/GraphicsDefs.h"
 #include "../../Container/HashMap.h"
 #include "../../Container/RefCounted.h"
+#include "../../Graphics/GPUObject.h"
+#include "../../Graphics/GraphicsDefs.h"
+#include "../../Graphics/ShaderVariation.h"
 
 namespace Atomic
 {
 
 class ConstantBuffer;
 class Graphics;
-class ShaderVariation;
-
-/// %Shader parameter definition.
-struct ShaderParameter
-{
-    /// Construct with defaults.
-    ShaderParameter() :
-        bufferPtr_(0)
-    {
-    }
-
-    /// Uniform location or byte offset in constant buffer.
-    int location_;
-    /// Element type.
-    unsigned type_;
-    /// Constant buffer pointer.
-    ConstantBuffer* bufferPtr_;
-};
 
 /// Linked shader program on the GPU.
 class ATOMIC_API ShaderProgram : public RefCounted, public GPUObject
 {
+    ATOMIC_REFCOUNTED(ShaderProgram)
+
 public:
     /// Construct.
     ShaderProgram(Graphics* graphics, ShaderVariation* vertexShader, ShaderVariation* pixelShader);
     /// Destruct.
     ~ShaderProgram();
-    
+
     /// Mark the GPU resource destroyed on context destruction.
     virtual void OnDeviceLost();
     /// Release shader program.
     virtual void Release();
-    
+
     /// Link the shaders and examine the uniforms and samplers used. Return true if successful.
     bool Link();
-    
+
     /// Return the vertex shader.
     ShaderVariation* GetVertexShader() const;
     /// Return the pixel shader.
     ShaderVariation* GetPixelShader() const;
     /// Return whether uses a shader parameter.
     bool HasParameter(StringHash param) const;
+
     /// Return whether uses a texture unit.
     bool HasTextureUnit(TextureUnit unit) const { return useTextureUnit_[unit]; }
+
     /// Return the info for a shader parameter, or null if does not exist.
     const ShaderParameter* GetParameter(StringHash param) const;
+
     /// Return linker output.
     const String& GetLinkerOutput() const { return linkerOutput_; }
+
+    /// Return semantic to vertex attributes location mappings used by the shader.
+    const HashMap<Pair<unsigned char, unsigned char>, unsigned>& GetVertexAttributes() const { return vertexAttributes_; }
+
+    /// Return attribute location use bitmask.
+    unsigned GetUsedVertexAttributes() const { return usedVertexAttributes_; }
+
     /// Return all constant buffers.
     const SharedPtr<ConstantBuffer>* GetConstantBuffers() const { return &constantBuffers_[0]; }
-    
+
     /// Check whether a shader parameter group needs update. Does not actually check whether parameters exist in the shaders.
     bool NeedParameterUpdate(ShaderParameterGroup group, const void* source);
     /// Clear a parameter source. Affects only the current shader program if appropriate.
@@ -102,6 +97,10 @@ private:
     HashMap<StringHash, ShaderParameter> shaderParameters_;
     /// Texture unit use.
     bool useTextureUnit_[MAX_TEXTURE_UNITS];
+    /// Vertex attributes.
+    HashMap<Pair<unsigned char, unsigned char>, unsigned> vertexAttributes_;
+    /// Used vertex attribute location bitmask.
+    unsigned usedVertexAttributes_;
     /// Constant buffers by binding index.
     SharedPtr<ConstantBuffer> constantBuffers_[MAX_SHADER_PARAMETER_GROUPS * 2];
     /// Remembered shader parameter sources for individual uniform mode.

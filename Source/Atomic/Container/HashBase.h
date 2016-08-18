@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include "Atomic/Atomic.h"
+
 #include "../Container/Allocator.h"
 #include "../Container/Hash.h"
 #include "../Container/Swap.h"
@@ -39,7 +41,7 @@ struct HashNodeBase
         next_(0)
     {
     }
-    
+
     /// Next node in the bucket.
     HashNodeBase* down_;
     /// Previous node.
@@ -56,32 +58,33 @@ struct HashIteratorBase
         ptr_(0)
     {
     }
-    
+
     /// Construct with a node pointer.
     explicit HashIteratorBase(HashNodeBase* ptr) :
         ptr_(ptr)
     {
     }
-    
+
     /// Test for equality with another iterator.
-    bool operator == (const HashIteratorBase& rhs) const { return ptr_ == rhs.ptr_; }
+    bool operator ==(const HashIteratorBase& rhs) const { return ptr_ == rhs.ptr_; }
+
     /// Test for inequality with another iterator.
-    bool operator != (const HashIteratorBase& rhs) const { return ptr_ != rhs.ptr_; }
-    
+    bool operator !=(const HashIteratorBase& rhs) const { return ptr_ != rhs.ptr_; }
+
     /// Go to the next node.
     void GotoNext()
     {
         if (ptr_)
             ptr_ = ptr_->next_;
     }
-    
+
     /// Go to the previous node.
     void GotoPrev()
     {
         if (ptr_)
             ptr_ = ptr_->prev_;
     }
-    
+
     /// Node pointer.
     HashNodeBase* ptr_;
 };
@@ -97,9 +100,11 @@ public:
     static const unsigned MIN_BUCKETS = 8;
     /// Maximum load factor.
     static const unsigned MAX_LOAD_FACTOR = 4;
-    
+
     /// Construct.
     HashBase() :
+        head_(0),
+        tail_(0),
         ptrs_(0),
         allocator_(0)
     {
@@ -113,24 +118,29 @@ public:
         Atomic::Swap(ptrs_, rhs.ptrs_);
         Atomic::Swap(allocator_, rhs.allocator_);
     }
-    
+
     /// Return number of elements.
     unsigned Size() const { return ptrs_ ? (reinterpret_cast<unsigned*>(ptrs_))[0] : 0; }
+
     /// Return number of buckets.
     unsigned NumBuckets() const { return ptrs_ ? (reinterpret_cast<unsigned*>(ptrs_))[1] : 0; }
+
     /// Return whether has no elements.
     bool Empty() const { return Size() == 0; }
-    
+
 protected:
     /// Allocate bucket head pointers + room for size and bucket count variables.
     void AllocateBuckets(unsigned size, unsigned numBuckets);
+
     /// Reset bucket head pointers.
     void ResetPtrs();
+
     /// Set new size.
     void SetSize(unsigned size) { if (ptrs_) (reinterpret_cast<unsigned*>(ptrs_))[0] = size; }
+
     /// Return bucket head pointers.
     HashNodeBase** Ptrs() const { return ptrs_ ? ptrs_ + 2 : 0; }
-    
+
     /// List head node pointer.
     HashNodeBase* head_;
     /// List tail node pointer.

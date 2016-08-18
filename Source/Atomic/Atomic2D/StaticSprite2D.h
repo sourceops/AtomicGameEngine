@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -32,7 +32,7 @@ class Sprite2D;
 /// Static sprite component.
 class ATOMIC_API StaticSprite2D : public Drawable2D
 {
-    OBJECT(StaticSprite2D);
+    ATOMIC_OBJECT(StaticSprite2D, Drawable2D);
 
 public:
     /// Construct.
@@ -65,20 +65,28 @@ public:
 
     /// Return sprite.
     Sprite2D* GetSprite() const;
+
     /// Return blend mode.
     BlendMode GetBlendMode() const { return blendMode_; }
+
     /// Return flip X.
     bool GetFlipX() const { return flipX_; }
+
     /// Return flip Y.
     bool GetFlipY() const { return flipY_; }
+
     /// Return color.
     const Color& GetColor() const { return color_; }
+
     /// Return alpha.
     float GetAlpha() const { return color_.a_; }
+
     /// Return use hot spot.
     bool GetUseHotSpot() const { return useHotSpot_; }
+
     /// Return hot spot.
     const Vector2& GetHotSpot() const { return hotSpot_; }
+
     /// Return custom material.
     Material* GetCustomMaterial() const;
 
@@ -98,8 +106,6 @@ protected:
     virtual void OnDrawOrderChanged();
     /// Update source batches.
     virtual void UpdateSourceBatches();
-    /// Handle flip changed.
-    virtual void OnFlipChanged();
     /// Update material.
     void UpdateMaterial();
 

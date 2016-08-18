@@ -1,8 +1,31 @@
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+
 #include <Atomic/Core/ProcessUtils.h>
 #include <Atomic/IO/Log.h>
 #include <Atomic/IO/File.h>
 #include <Atomic/Resource/JSONFile.h>
 
+#include "JSBType.h"
 #include "JSBModule.h"
 #include "JSBClass.h"
 #include "JSBFunction.h"
@@ -182,6 +205,42 @@ void JSBClass::SetSkipFunction(const String& name, bool skip)
     }
 
 }
+
+bool JSBClass::MatchProperty(JSBProperty* property, bool includeBases)
+{
+
+    HashMap<String, JSBProperty*>::Iterator itr;
+    for (itr = properties_.Begin(); itr != properties_.End(); itr++)
+    {
+        if (itr->first_ != property->name_)
+            continue;
+
+        return true;
+    }
+
+    if (!includeBases || !baseClasses_.Size())
+        return 0;
+
+    return baseClasses_[0]->MatchProperty(property, true);
+}
+
+JSBFunction* JSBClass::MatchFunction(JSBFunction *function, bool includeBases)
+{
+    for (unsigned i = 0; i < functions_.Size(); i++)
+    {
+        JSBFunction* func = functions_[i];
+
+        if (func->Match(function))
+            return func;
+    }
+
+    if (!includeBases || !baseClasses_.Size())
+        return 0;
+
+    return baseClasses_[0]->MatchFunction(function, true);
+
+}
+
 void JSBClass::SetBaseClass(JSBClass *baseClass)
 {
     // we can't hook up chain here, as base class may not have been visited yet
@@ -267,7 +326,7 @@ void JSBClass::Process()
         }
 
 
-        if (function->IsOverride())
+        if (function->IsOverload())
             continue;
 
         for (unsigned k = 0; k < functions_.Size(); k++)
@@ -279,8 +338,8 @@ void JSBClass::Process()
 
             if (function->GetName() == function2->GetName())
             {
-                function->SetOverride();
-                function2->SetOverride();
+                function->SetOverload();
+                function2->SetOverload();
                 // initially set all overridden functions to skip
                 function->SetSkip(true);
                 function2->SetSkip(true);
@@ -295,10 +354,10 @@ void JSBClass::Process()
     {
         JSBFunction* function = functions_[j];
 
-        if (function->IsOverride())
+        if (function->IsOverload())
         {
             for (unsigned k = 0; k < overrides_.Size(); k++)
-            {                
+            {
                 JSBFunctionSignature* override =  overrides_[k];
 
                 if (!override->Match(function))
@@ -349,6 +408,7 @@ void JSBClass::AddPropertyFunction(JSBFunction* function)
     if (!prop)
     {
         prop = new JSBProperty();
+        prop->name_ = function->GetPropertyName();
         properties_[function->GetPropertyName()] = prop;
     }
 
@@ -373,22 +433,22 @@ void JSBClass::Dump()
 {
     if (name_ != nativeName_)
     {
-        LOGINFOF("Class: %s (%s)", name_.CString(), nativeName_.CString());
+        ATOMIC_LOGINFOF("Class: %s (%s)", name_.CString(), nativeName_.CString());
     }
     else
     {
-        LOGINFOF("Class: %s", name_.CString());
+        ATOMIC_LOGINFOF("Class: %s", name_.CString());
     }
 
-    LOGINFOF("   IsObject: %s", IsObject() ? "true" : "false");
+    ATOMIC_LOGINFOF("   IsObject: %s", IsObject() ? "true" : "false");
 
     if (baseClasses_.Size())
     {
-        LOGINFOF("   Bases:");
+        ATOMIC_LOGINFOF("   Bases:");
         for (unsigned i = 0; i < baseClasses_.Size(); i++)
         {
 
-            LOGINFOF("      %s", baseClasses_.At(i)->GetName().CString());
+            ATOMIC_LOGINFOF("      %s", baseClasses_.At(i)->GetName().CString());
         }
     }
 

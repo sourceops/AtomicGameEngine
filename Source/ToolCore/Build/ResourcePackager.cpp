@@ -1,9 +1,8 @@
-// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
-
 //
 // Portions Copyright (c) 2008-2014 the Urho3D project.
+//
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -23,8 +22,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 //
-
-#include "AtomicEditor.h"
 
 #include "Atomic/Core/StringUtils.h"
 #include <Atomic/IO/FileSystem.h>
@@ -54,12 +51,12 @@ ResourcePackager::~ResourcePackager()
 
 bool ResourcePackager::WritePackageFile(const String& destFilePath)
 {
-    buildBase_->BuildLog("Writing package");
+    buildBase_->BuildLog("Writing package", false);
 
     SharedPtr<File> dest(new File(context_, destFilePath, FILE_WRITE));
     if (!dest->IsOpen())
     {
-        buildBase_->BuildError("Could not open output file " + destFilePath);
+        buildBase_->FailBuild("Could not open output file " + destFilePath);
         return false;
     }
 
@@ -89,7 +86,7 @@ bool ResourcePackager::WritePackageFile(const String& destFilePath)
         File srcFile(context_, entry->absolutePath_);
         if (!srcFile.IsOpen())
         {
-            buildBase_->BuildError("Could not open input file " + entry->absolutePath_);
+            buildBase_->FailBuild("Could not open input file " + entry->absolutePath_);
             return false;
         }
 
@@ -99,7 +96,7 @@ bool ResourcePackager::WritePackageFile(const String& destFilePath)
 
         if (srcFile.Read(&buffer[0], dataSize) != dataSize)
         {
-            buildBase_->BuildError("Could not read input file " + entry->absolutePath_);
+            buildBase_->FailBuild("Could not read input file " + entry->absolutePath_);
             return false;
         }
 
@@ -136,7 +133,7 @@ bool ResourcePackager::WritePackageFile(const String& destFilePath)
             unsigned packedSize = LZ4_compressHC((const char*)&buffer[pos], (char*)compressBuffer.Get(), unpackedSize);
             if (!packedSize)
             {
-                buildBase_->BuildError("LZ4 compression failed for file " + entry->absolutePath_ + " at offset " + pos);
+                buildBase_->FailBuild(ToString("LZ4 compression failed for file %s at offset %u", entry->absolutePath_.CString(), pos));
                 return false;
             }
 
@@ -148,7 +145,7 @@ bool ResourcePackager::WritePackageFile(const String& destFilePath)
             pos += unpackedSize;
         }
 
-        buildBase_->BuildLog(entry->absolutePath_ + " in " + String(dataSize) + " out " + String(totalPackedBytes));
+        buildBase_->BuildLog(entry->absolutePath_ + " in " + String(dataSize) + " out " + String(totalPackedBytes), false);
         }
     //}
 
@@ -170,6 +167,7 @@ bool ResourcePackager::WritePackageFile(const String& destFilePath)
         dest->WriteUInt(entry->checksum_);
     }
 
+    buildBase_->BuildLog("Resource Package:");
     buildBase_->BuildLog("Number of files " + String(resourceEntries_.Size()));
     buildBase_->BuildLog("File data size " + String(totalDataSize));
     buildBase_->BuildLog("Package size " + String(dest->GetSize()));
@@ -195,12 +193,7 @@ void ResourcePackager::GeneratePackage(const String& destFilePath)
 
         if (!file.Open(entry->absolutePath_))
         {
-            buildBase_->BuildError(Atomic::ToString("Could not open resource file %s", entry->absolutePath_.CString()));
-            return;
-        }
-
-        if (!file.GetSize())
-        {
+            buildBase_->FailBuild(Atomic::ToString("Could not open resource file %s", entry->absolutePath_.CString()));
             return;
         }
 

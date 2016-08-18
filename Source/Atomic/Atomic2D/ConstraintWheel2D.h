@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,11 +30,11 @@ namespace Atomic
 /// 2D wheel constraint component.
 class ATOMIC_API ConstraintWheel2D : public Constraint2D
 {
-    OBJECT(ConstraintWheel2D);
+    ATOMIC_OBJECT(ConstraintWheel2D, Constraint2D);
 
 public:
     /// Construct.
-    ConstraintWheel2D(Context* scontext);
+    ConstraintWheel2D(Context* context);
     /// Destruct.
     virtual ~ConstraintWheel2D();
     /// Register object factory.
@@ -57,19 +57,25 @@ public:
 
     /// Return anchor.
     const Vector2& GetAnchor() const { return anchor_; }
+
     /// Return axis.
     const Vector2& GetAxis() const { return axis_; }
+
     /// Return enable motor.
     bool GetEnableMotor() const { return jointDef_.enableMotor; }
+
     /// Return maxMotor torque.
     float GetMaxMotorTorque() const { return jointDef_.maxMotorTorque; }
+
     /// Return motor speed.
     float GetMotorSpeed() const { return jointDef_.motorSpeed; }
+
     /// Return frequency Hz.
     float GetFrequencyHz() const { return jointDef_.frequencyHz; }
+
     /// Return damping ratio.
     float GetDampingRatio() const { return jointDef_.dampingRatio; }
-   
+
 private:
     /// Return joint def.
     virtual b2JointDef* GetJointDef();

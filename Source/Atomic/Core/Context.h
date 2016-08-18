@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,17 +22,30 @@
 
 #pragma once
 
+#include "../Container/HashSet.h"
 #include "../Core/Attribute.h"
 #include "../Core/Object.h"
-#include "../Container/HashSet.h"
 
 namespace Atomic
 {
 
-/// Atomic execution context. Provides access to subsystems, object factories and attributes, and event receivers.
+// ATOMIC BEGIN
+
+class GlobalEventListener
+{
+public:
+    virtual void BeginSendEvent(Context* context, Object* sender, StringHash eventType, VariantMap& eventData) = 0;
+    virtual void EndSendEvent(Context* context, Object* sender, StringHash eventType, VariantMap& eventData) = 0;
+};
+
+// ATOMIC END
+
+/// Urho3D execution context. Provides access to subsystems, object factories and attributes, and event receivers.
 class ATOMIC_API Context : public RefCounted
 {
     friend class Object;
+
+    ATOMIC_REFCOUNTED(Context)
 
 public:
     /// Construct.
@@ -40,8 +53,18 @@ public:
     /// Destruct.
     ~Context();
 
+    /// Create an object by type. Return pointer to it or null if no factory found.
+    template <class T> inline SharedPtr<T> CreateObject()
+    {
+        return StaticCast<T>(CreateObject(T::GetTypeStatic()));
+    }
+
+    // ATOMIC BEGIN
     /// Create an object by type hash. Return pointer to it or null if no factory found.
-    SharedPtr<Object> CreateObject(StringHash objectType);
+    SharedPtr<Object> CreateObject(StringHash objectType, const XMLElement &source = XMLElement::EMPTY);
+    // ATOMIC END
+
+
     /// Register a factory for an object type.
     void RegisterFactory(ObjectFactory* factory);
     /// Register a factory for an object type and specify the object category.
@@ -78,16 +101,31 @@ public:
 
     /// Return subsystem by type.
     Object* GetSubsystem(StringHash type) const;
+
+    /// Return global variable based on key
+    const Variant& GetGlobalVar(StringHash key) const ;
+
+    /// Return all global variables.
+    const VariantMap& GetGlobalVars() const { return globalVars_; }
+
+    /// Set global variable with the respective key and value
+    void SetGlobalVar(StringHash key, const Variant& value);
+
     /// Return all subsystems.
     const HashMap<StringHash, SharedPtr<Object> >& GetSubsystems() const { return subsystems_; }
+
     /// Return all object factories.
     const HashMap<StringHash, SharedPtr<ObjectFactory> >& GetObjectFactories() const { return factories_; }
+
     /// Return all object categories.
     const HashMap<String, Vector<StringHash> >& GetObjectCategories() const { return objectCategories_; }
+
     /// Return active event sender. Null outside event handling.
     Object* GetEventSender() const;
+
     /// Return active event handler. Set by Object. Null outside event handling.
     EventHandler* GetEventHandler() const { return eventHandler_; }
+
     /// Return object type name from hash, or empty if unknown.
     const String& GetTypeName(StringHash objectType) const;
     /// Return a specific attribute description for an object, or null if not found.
@@ -134,6 +172,20 @@ public:
         return i != eventReceivers_.End() ? &i->second_ : 0;
     }
 
+    // ATOMIC BEGIN
+
+    /// Get whether an Editor Context
+    bool GetEditorContext() { return editorContext_; }
+
+    /// Get whether an Editor Context
+    void SetEditorContext(bool editor) { editorContext_ = editor; }
+
+    // hook for listening into events
+    void AddGlobalEventListener(GlobalEventListener* listener) { globalEventListeners_.Push(listener); }
+    void RemoveGlobalEventListener(GlobalEventListener* listener) { globalEventListeners_.Erase(globalEventListeners_.Find(listener)); }
+
+    // ATOMIC END
+
 private:
     /// Add event receiver.
     void AddEventReceiver(Object* receiver, StringHash eventType);
@@ -145,12 +197,13 @@ private:
     void RemoveEventReceiver(Object* receiver, Object* sender, StringHash eventType);
     /// Remove event receiver from non-specific events.
     void RemoveEventReceiver(Object* receiver, StringHash eventType);
+    /// Begin event send.
+    void BeginSendEvent(Object* sender, StringHash eventType);
+    /// End event send. Clean up event receivers removed in the meanwhile.
+    void EndSendEvent();
+
     /// Set current event handler. Called by Object.
     void SetEventHandler(EventHandler* handler) { eventHandler_ = handler; }
-    /// Begin event send.
-    void BeginSendEvent(Object* sender) { eventSenders_.Push(sender); }
-    /// End event send. Clean up event receivers removed in the meanwhile.
-    void EndSendEvent() { eventSenders_.Pop(); }
 
     /// Object factories.
     HashMap<StringHash, SharedPtr<ObjectFactory> > factories_;
@@ -172,16 +225,53 @@ private:
     EventHandler* eventHandler_;
     /// Object categories.
     HashMap<String, Vector<StringHash> > objectCategories_;
+    /// Variant map for global variables that can persist throughout application execution.
+    VariantMap globalVars_;
+
+    // ATOMIC BEGIN
+
+    /// Begin event send.
+    void GlobalBeginSendEvent(Object* sender, StringHash eventType, VariantMap& eventData) {
+        for (unsigned i = 0; i < globalEventListeners_.Size(); i++)
+            globalEventListeners_[i]->BeginSendEvent(this, sender, eventType, eventData);
+        eventSenders_.Push(sender);
+    }
+
+    /// End event send. Clean up event receivers removed in the meanwhile.
+    void GlobalEndSendEvent(Object* sender, StringHash eventType, VariantMap& eventData) {
+        for (unsigned i = 0; i < globalEventListeners_.Size(); i++)
+            globalEventListeners_[i]->EndSendEvent(this, sender, eventType, eventData);
+        eventSenders_.Pop();
+    }
+
+    PODVector<GlobalEventListener*> globalEventListeners_;
+    bool editorContext_;
+    // ATOMIC END
+
 };
 
 template <class T> void Context::RegisterFactory() { RegisterFactory(new ObjectFactoryImpl<T>(this)); }
-template <class T> void Context::RegisterFactory(const char* category) { RegisterFactory(new ObjectFactoryImpl<T>(this), category); }
+
+template <class T> void Context::RegisterFactory(const char* category)
+{
+    RegisterFactory(new ObjectFactoryImpl<T>(this), category);
+}
+
 template <class T> void Context::RemoveSubsystem() { RemoveSubsystem(T::GetTypeStatic()); }
+
 template <class T> void Context::RegisterAttribute(const AttributeInfo& attr) { RegisterAttribute(T::GetTypeStatic(), attr); }
+
 template <class T> void Context::RemoveAttribute(const char* name) { RemoveAttribute(T::GetTypeStatic(), name); }
+
 template <class T, class U> void Context::CopyBaseAttributes() { CopyBaseAttributes(T::GetTypeStatic(), U::GetTypeStatic()); }
+
 template <class T> T* Context::GetSubsystem() const { return static_cast<T*>(GetSubsystem(T::GetTypeStatic())); }
+
 template <class T> AttributeInfo* Context::GetAttribute(const char* name) { return GetAttribute(T::GetTypeStatic(), name); }
-template <class T> void Context::UpdateAttributeDefaultValue(const char* name, const Variant& defaultValue) { UpdateAttributeDefaultValue(T::GetTypeStatic(), name, defaultValue); }
+
+template <class T> void Context::UpdateAttributeDefaultValue(const char* name, const Variant& defaultValue)
+{
+    UpdateAttributeDefaultValue(T::GetTypeStatic(), name, defaultValue);
+}
 
 }

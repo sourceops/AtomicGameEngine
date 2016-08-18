@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,15 +20,56 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
-#include "../IO/Log.h"
 #include "../Core/Thread.h"
+#include "../IO/Log.h"
 
 #include "../DebugNew.h"
 
+
 namespace Atomic
 {
+
+TypeInfo::TypeInfo(const char* typeName, const TypeInfo* baseTypeInfo) :
+    type_(typeName),
+    typeName_(typeName),
+    baseTypeInfo_(baseTypeInfo)
+{
+}
+
+TypeInfo::~TypeInfo()
+{
+}
+
+bool TypeInfo::IsTypeOf(StringHash type) const
+{
+    const TypeInfo* current = this;
+    while (current)
+    {
+        if (current->GetType() == type)
+            return true;
+
+        current = current->GetBaseTypeInfo();
+    }
+
+    return false;
+}
+
+bool TypeInfo::IsTypeOf(const TypeInfo* typeInfo) const
+{
+    const TypeInfo* current = this;
+    while (current)
+    {
+        if (current == typeInfo)
+            return true;
+
+        current = current->GetBaseTypeInfo();
+    }
+
+    return false;
+}
 
 Object::Object(Context* context) :
     context_(context)
@@ -48,7 +89,7 @@ void Object::OnEvent(Object* sender, StringHash eventType, VariantMap& eventData
     Context* context = context_;
     EventHandler* specific = 0;
     EventHandler* nonSpecific = 0;
-    
+
     EventHandler* handler = eventHandlers_.First();
     while (handler)
     {
@@ -64,7 +105,7 @@ void Object::OnEvent(Object* sender, StringHash eventType, VariantMap& eventData
         }
         handler = eventHandlers_.Next(handler);
     }
-    
+
     // Specific event handlers have priority, so if found, invoke first
     if (specific)
     {
@@ -73,7 +114,7 @@ void Object::OnEvent(Object* sender, StringHash eventType, VariantMap& eventData
         context->SetEventHandler(0);
         return;
     }
-    
+
     if (nonSpecific)
     {
         context->SetEventHandler(nonSpecific);
@@ -82,20 +123,40 @@ void Object::OnEvent(Object* sender, StringHash eventType, VariantMap& eventData
     }
 }
 
+bool Object::IsTypeOf(StringHash type)
+{
+    return GetTypeInfoStatic()->IsTypeOf(type);
+}
+
+bool Object::IsTypeOf(const TypeInfo* typeInfo)
+{
+    return GetTypeInfoStatic()->IsTypeOf(typeInfo);
+}
+
+bool Object::IsInstanceOf(StringHash type) const
+{
+    return GetTypeInfo()->IsTypeOf(type);
+}
+
+bool Object::IsInstanceOf(const TypeInfo* typeInfo) const
+{
+    return GetTypeInfo()->IsTypeOf(typeInfo);
+}
+
 void Object::SubscribeToEvent(StringHash eventType, EventHandler* handler)
 {
     if (!handler)
         return;
-    
+
     handler->SetSenderAndEventType(0, eventType);
     // Remove old event handler first
     EventHandler* previous;
     EventHandler* oldHandler = FindSpecificEventHandler(0, eventType, &previous);
     if (oldHandler)
         eventHandlers_.Erase(oldHandler, previous);
-    
+
     eventHandlers_.InsertFront(handler);
-    
+
     context_->AddEventReceiver(this, eventType);
 }
 
@@ -107,18 +168,30 @@ void Object::SubscribeToEvent(Object* sender, StringHash eventType, EventHandler
         delete handler;
         return;
     }
-    
+
     handler->SetSenderAndEventType(sender, eventType);
     // Remove old event handler first
     EventHandler* previous;
     EventHandler* oldHandler = FindSpecificEventHandler(sender, eventType, &previous);
     if (oldHandler)
         eventHandlers_.Erase(oldHandler, previous);
-    
+
     eventHandlers_.InsertFront(handler);
-    
+
     context_->AddEventReceiver(this, sender, eventType);
 }
+
+#if ATOMIC_CXX11
+void Object::SubscribeToEvent(StringHash eventType, const std::function<void(StringHash, VariantMap&)>& function, void* userData/*=0*/)
+{
+    SubscribeToEvent(eventType, new EventHandler11Impl(function, userData));
+}
+
+void Object::SubscribeToEvent(Object* sender, StringHash eventType, const std::function<void(StringHash, VariantMap&)>& function, void* userData/*=0*/)
+{
+    SubscribeToEvent(sender, eventType, new EventHandler11Impl(function, userData));
+}
+#endif
 
 void Object::UnsubscribeFromEvent(StringHash eventType)
 {
@@ -143,7 +216,7 @@ void Object::UnsubscribeFromEvent(Object* sender, StringHash eventType)
 {
     if (!sender)
         return;
-    
+
     EventHandler* previous;
     EventHandler* handler = FindSpecificEventHandler(sender, eventType, &previous);
     if (handler)
@@ -157,7 +230,7 @@ void Object::UnsubscribeFromEvents(Object* sender)
 {
     if (!sender)
         return;
-    
+
     for (;;)
     {
         EventHandler* previous;
@@ -194,18 +267,18 @@ void Object::UnsubscribeFromAllEventsExcept(const PODVector<StringHash>& excepti
 {
     EventHandler* handler = eventHandlers_.First();
     EventHandler* previous = 0;
-    
+
     while (handler)
     {
         EventHandler* next = eventHandlers_.Next(handler);
-        
+
         if ((!onlyUserData || handler->GetUserData()) && !exceptions.Contains(handler->GetEventType()))
         {
             if (handler->GetSender())
                 context_->RemoveEventReceiver(this, handler->GetSender(), handler->GetEventType());
             else
                 context_->RemoveEventReceiver(this, handler->GetEventType());
-            
+
             eventHandlers_.Erase(handler, previous);
         }
         else
@@ -218,7 +291,7 @@ void Object::UnsubscribeFromAllEventsExcept(const PODVector<StringHash>& excepti
 void Object::SendEvent(StringHash eventType)
 {
     VariantMap noEventData;
-    
+
     SendEvent(eventType, noEventData);
 }
 
@@ -226,17 +299,21 @@ void Object::SendEvent(StringHash eventType, VariantMap& eventData)
 {
     if (!Thread::IsMainThread())
     {
-        LOGERROR("Sending events is only supported from the main thread");
+        ATOMIC_LOGERROR("Sending events is only supported from the main thread");
         return;
     }
-    
+
     // Make a weak pointer to self to check for destruction during event handling
     WeakPtr<Object> self(this);
     Context* context = context_;
     HashSet<Object*> processed;
-    
-    context->BeginSendEvent(this);
-    
+
+// ATOMIC BEGIN
+    context->GlobalBeginSendEvent(this, eventType, eventData);
+// ATOMIC END
+
+    context->BeginSendEvent(this, eventType);
+
     // Check first the specific event receivers
     const HashSet<Object*>* group = context->GetEventReceivers(this, eventType);
     if (group)
@@ -248,26 +325,26 @@ void Object::SendEvent(StringHash eventType, VariantMap& eventData)
             Object* next = 0;
             if (i != group->End())
                 next = *i;
-            
+
             unsigned oldSize = group->Size();
             receiver->OnEvent(this, eventType, eventData);
-            
+
             // If self has been destroyed as a result of event handling, exit
             if (self.Expired())
             {
                 context->EndSendEvent();
                 return;
             }
-            
+
             // If group has changed size during iteration (removed/added subscribers) try to recover
             /// \todo This is not entirely foolproof, as a subscriber could have been added to make up for the removed one
             if (group->Size() != oldSize)
                 i = group->Find(next);
-            
+
             processed.Insert(receiver);
         }
     }
-    
+
     // Then the non-specific receivers
     group = context->GetEventReceivers(eventType);
     if (group)
@@ -281,16 +358,16 @@ void Object::SendEvent(StringHash eventType, VariantMap& eventData)
                 Object* next = 0;
                 if (i != group->End())
                     next = *i;
-                
+
                 unsigned oldSize = group->Size();
                 receiver->OnEvent(this, eventType, eventData);
-                
+
                 if (self.Expired())
                 {
                     context->EndSendEvent();
                     return;
                 }
-                
+
                 if (group->Size() != oldSize)
                     i = group->Find(next);
             }
@@ -305,31 +382,51 @@ void Object::SendEvent(StringHash eventType, VariantMap& eventData)
                 Object* next = 0;
                 if (i != group->End())
                     next = *i;
-                
+
                 if (!processed.Contains(receiver))
                 {
                     unsigned oldSize = group->Size();
                     receiver->OnEvent(this, eventType, eventData);
-                    
+
                     if (self.Expired())
                     {
                         context->EndSendEvent();
                         return;
                     }
-                    
+
                     if (group->Size() != oldSize)
                         i = group->Find(next);
                 }
             }
         }
     }
-    
+
     context->EndSendEvent();
+
+// ATOMIC BEGIN
+    context->GlobalEndSendEvent(this,eventType, eventData);
+// ATOMIC END
+
 }
 
 VariantMap& Object::GetEventDataMap() const
 {
     return context_->GetEventDataMap();
+}
+
+const Variant& Object::GetGlobalVar(StringHash key) const
+{
+    return context_->GetGlobalVar(key);
+}
+
+const VariantMap& Object::GetGlobalVars() const
+{
+    return context_->GetGlobalVars();
+}
+
+void Object::SetGlobalVar(StringHash key, const Variant& value)
+{
+    context_->SetGlobalVar(key, value);
 }
 
 Object* Object::GetSubsystem(StringHash type) const
@@ -377,7 +474,7 @@ EventHandler* Object::FindEventHandler(StringHash eventType, EventHandler** prev
     EventHandler* handler = eventHandlers_.First();
     if (previous)
         *previous = 0;
-    
+
     while (handler)
     {
         if (handler->GetEventType() == eventType)
@@ -386,7 +483,7 @@ EventHandler* Object::FindEventHandler(StringHash eventType, EventHandler** prev
             *previous = handler;
         handler = eventHandlers_.Next(handler);
     }
-    
+
     return 0;
 }
 
@@ -395,7 +492,7 @@ EventHandler* Object::FindSpecificEventHandler(Object* sender, EventHandler** pr
     EventHandler* handler = eventHandlers_.First();
     if (previous)
         *previous = 0;
-    
+
     while (handler)
     {
         if (handler->GetSender() == sender)
@@ -404,7 +501,7 @@ EventHandler* Object::FindSpecificEventHandler(Object* sender, EventHandler** pr
             *previous = handler;
         handler = eventHandlers_.Next(handler);
     }
-    
+
     return 0;
 }
 
@@ -413,7 +510,7 @@ EventHandler* Object::FindSpecificEventHandler(Object* sender, StringHash eventT
     EventHandler* handler = eventHandlers_.First();
     if (previous)
         *previous = 0;
-    
+
     while (handler)
     {
         if (handler->GetSender() == sender && handler->GetEventType() == eventType)
@@ -422,7 +519,7 @@ EventHandler* Object::FindSpecificEventHandler(Object* sender, StringHash eventT
             *previous = handler;
         handler = eventHandlers_.Next(handler);
     }
-    
+
     return 0;
 }
 
@@ -430,7 +527,7 @@ void Object::RemoveEventSender(Object* sender)
 {
     EventHandler* handler = eventHandlers_.First();
     EventHandler* previous = 0;
-    
+
     while (handler)
     {
         if (handler->GetSender() == sender)
@@ -446,5 +543,57 @@ void Object::RemoveEventSender(Object* sender)
         }
     }
 }
+
+
+Atomic::StringHash EventNameRegistrar::RegisterEventName(const char* eventName)
+{
+    StringHash id(eventName);
+    GetEventNameMap()[id] = eventName;
+    return id;
+}
+
+const String& EventNameRegistrar::GetEventName(StringHash eventID)
+{
+    HashMap<StringHash, String>::ConstIterator it = GetEventNameMap().Find(eventID);
+    return  it != GetEventNameMap().End() ? it->second_ : String::EMPTY ;
+}
+
+HashMap<StringHash, String>& EventNameRegistrar::GetEventNameMap()
+{
+    static HashMap<StringHash, String> eventNames_;
+    return eventNames_;
+}
+
+// ATOMIC BEGIN
+
+void Object::UnsubscribeFromEventReceiver(Object* receiver)
+{
+    EventHandler* handler = eventHandlers_.First();
+    EventHandler* previous = 0;
+
+    while (handler)
+    {
+        if (handler->GetReceiver() == receiver)
+        {
+
+            if (handler->GetSender())
+                context_->RemoveEventReceiver(this, handler->GetSender(), handler->GetEventType());
+            else
+                context_->RemoveEventReceiver(this, handler->GetEventType());
+
+            EventHandler* next = eventHandlers_.Next(handler);
+            eventHandlers_.Erase(handler, previous);
+            handler = next;
+        }
+        else
+        {
+            previous = handler;
+            handler = eventHandlers_.Next(handler);
+        }
+    }
+
+}
+
+// ATOMIC END
 
 }

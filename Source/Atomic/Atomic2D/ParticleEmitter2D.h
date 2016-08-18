@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -31,13 +31,13 @@ class ParticleEffect2D;
 class Sprite2D;
 
 /// 2D particle.
- struct Particle2D
+struct Particle2D
 {
     /// Time to live.
     float timeToLive_;
 
     /// Position.
-    Vector2 position_;
+    Vector3 position_;
     /// Size.
     float size_;
     /// Size delta.
@@ -75,7 +75,7 @@ class Sprite2D;
 /// 2D particle emitter component.
 class ATOMIC_API ParticleEmitter2D : public Drawable2D
 {
-    OBJECT(ParticleEmitter2D);
+    ATOMIC_OBJECT(ParticleEmitter2D, Drawable2D);
 
 public:
     /// Construct.
@@ -87,7 +87,7 @@ public:
 
     /// Handle enabled/disabled state change.
     virtual void OnSetEnabled();
-    
+
     /// Set particle effect.
     void SetEffect(ParticleEffect2D* effect);
     /// Set sprite.
@@ -101,8 +101,10 @@ public:
     ParticleEffect2D* GetEffect() const;
     /// Return sprite.
     Sprite2D* GetSprite() const;
+
     /// Return blend mode.
     BlendMode GetBlendMode() const { return blendMode_; }
+
     /// Return max particles.
     unsigned GetMaxParticles() const { return particles_.Size(); }
 
@@ -116,8 +118,8 @@ public:
     ResourceRef GetSpriteAttr() const;
 
 private:
-    /// Handle node being assigned.
-    virtual void OnNodeSet(Node* node);
+    /// Handle scene being assigned.
+    virtual void OnSceneSet(Scene* scene);
     /// Recalculate the world-space bounding box.
     virtual void OnWorldBoundingBoxUpdate();
     /// Handle draw order changed.
@@ -141,8 +143,8 @@ private:
     SharedPtr<Sprite2D> sprite_;
     /// Blend mode.
     BlendMode blendMode_;
-    /// Num particles.
-    int numParticles_;
+    /// Nummber of particles.
+    unsigned numParticles_;
     /// Emission time.
     float emissionTime_;
     /// Emit particle time

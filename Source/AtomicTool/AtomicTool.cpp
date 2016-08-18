@@ -1,3 +1,24 @@
+//
+// Copyright (c) 2014-2016 THUNDERBEAST GAMES LLC
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include <Atomic/Core/ProcessUtils.h>
 #include <Atomic/IO/Log.h>
@@ -15,7 +36,7 @@
 
 #include "AtomicTool.h"
 
-DEFINE_APPLICATION_MAIN(AtomicTool::AtomicTool);
+ATOMIC_DEFINE_APPLICATION_MAIN(AtomicTool::AtomicTool);
 
 using namespace ToolCore;
 
@@ -67,17 +88,11 @@ void AtomicTool::Setup()
         }
 
     }
-#ifndef ATOMIC_DEV_BUILD
-    if (!cliDataPath_.Length())
-    {
-        ErrorExit("Unable to parse --data-path");
-    }
-#endif
 
     engineParameters_["Headless"] = true;
     engineParameters_["LogLevel"] = LOG_INFO;
 
-    // no default resources (will be initialized later)
+    // no default resources, AtomicTool may be run outside of source tree
     engineParameters_["ResourcePaths"] = "";
 }
 
@@ -131,7 +146,7 @@ void AtomicTool::HandleLicenseActivationError(StringHash eventType, VariantMap& 
 
 void AtomicTool::HandleLicenseActivationSuccess(StringHash eventType, VariantMap& eventData)
 {
-    LOGRAW("\nActivation successful, thank you!\n\n");
+    ATOMIC_LOGRAW("\nActivation successful, thank you!\n\n");
     GetSubsystem<Engine>()->Exit();
 }
 
@@ -147,8 +162,8 @@ void AtomicTool::DoActivation()
 
     licenseSystem->LicenseAgreementConfirmed();
 
-    SubscribeToEvent(E_LICENSE_ACTIVATIONERROR, HANDLER(AtomicTool, HandleLicenseActivationError));
-    SubscribeToEvent(E_LICENSE_ACTIVATIONSUCCESS, HANDLER(AtomicTool, HandleLicenseActivationSuccess));
+    SubscribeToEvent(E_LICENSE_ACTIVATIONERROR, ATOMIC_HANDLER(AtomicTool, HandleLicenseActivationError));
+    SubscribeToEvent(E_LICENSE_ACTIVATIONSUCCESS, ATOMIC_HANDLER(AtomicTool, HandleLicenseActivationSuccess));
 
     licenseSystem->RequestServerActivation(activationKey_);
 
@@ -162,7 +177,7 @@ void AtomicTool::HandleLicenseDeactivationError(StringHash eventType, VariantMap
 
 void AtomicTool::HandleLicenseDeactivationSuccess(StringHash eventType, VariantMap& eventData)
 {
-    LOGRAW("\nDeactivation successful\n\n");
+    ATOMIC_LOGRAW("\nDeactivation successful\n\n");
     GetSubsystem<Engine>()->Exit();
 }
 
@@ -176,26 +191,26 @@ void AtomicTool::DoDeactivation()
         return;
     }
 
-    SharedPtr<CurlRequest> request = licenseSystem->Deactivate();
-    if (request.Null())
+    if (!licenseSystem->Deactivate())
     {
         ErrorExit("\nNot activated\n");
         return;
     }
-    SubscribeToEvent(E_LICENSE_DEACTIVATIONERROR, HANDLER(AtomicTool, HandleLicenseDeactivationError));
-    SubscribeToEvent(E_LICENSE_DEACTIVATIONSUCCESS, HANDLER(AtomicTool, HandleLicenseDeactivationSuccess));
+
+    SubscribeToEvent(E_LICENSE_DEACTIVATIONERROR, ATOMIC_HANDLER(AtomicTool, HandleLicenseDeactivationError));
+    SubscribeToEvent(E_LICENSE_DEACTIVATIONSUCCESS, ATOMIC_HANDLER(AtomicTool, HandleLicenseDeactivationSuccess));
 }
 
 void AtomicTool::Start()
 {
     // Subscribe to events
-    SubscribeToEvent(E_COMMANDERROR, HANDLER(AtomicTool, HandleCommandError));
-    SubscribeToEvent(E_COMMANDFINISHED, HANDLER(AtomicTool, HandleCommandFinished));
+    SubscribeToEvent(E_COMMANDERROR, ATOMIC_HANDLER(AtomicTool, HandleCommandError));
+    SubscribeToEvent(E_COMMANDFINISHED, ATOMIC_HANDLER(AtomicTool, HandleCommandFinished));
 
-    SubscribeToEvent(E_LICENSE_EULAREQUIRED, HANDLER(AtomicTool, HandleLicenseEulaRequired));
-    SubscribeToEvent(E_LICENSE_ACTIVATIONREQUIRED, HANDLER(AtomicTool, HandleLicenseActivationRequired));
-    SubscribeToEvent(E_LICENSE_ERROR, HANDLER(AtomicTool, HandleLicenseError));
-    SubscribeToEvent(E_LICENSE_SUCCESS, HANDLER(AtomicTool, HandleLicenseSuccess));
+    SubscribeToEvent(E_LICENSE_EULAREQUIRED, ATOMIC_HANDLER(AtomicTool, HandleLicenseEulaRequired));
+    SubscribeToEvent(E_LICENSE_ACTIVATIONREQUIRED, ATOMIC_HANDLER(AtomicTool, HandleLicenseActivationRequired));
+    SubscribeToEvent(E_LICENSE_ERROR, ATOMIC_HANDLER(AtomicTool, HandleLicenseError));
+    SubscribeToEvent(E_LICENSE_SUCCESS, ATOMIC_HANDLER(AtomicTool, HandleLicenseSuccess));
 
     const Vector<String>& arguments = GetArguments();
 
@@ -205,7 +220,7 @@ void AtomicTool::Start()
     ToolEnvironment* env = new ToolEnvironment(context_);
     context_->RegisterSubsystem(env);
 
-#ifdef ATOMIC_DEV_BUILD
+//#ifdef ATOMIC_DEV_BUILD
 
     if (!env->InitFromJSON())
     {
@@ -215,14 +230,10 @@ void AtomicTool::Start()
 
     if (!cliDataPath_.Length())
     {
-        cliDataPath_ = env->GetRootSourceDir() + "/Data/AtomicEditor/";
+        cliDataPath_ = env->GetRootSourceDir() + "/Resources/";
     }
 
-#endif
-
-    ResourceCache* cache = GetSubsystem<ResourceCache>();
-    cache->AddResourceDir(env->GetCoreDataDir());
-    cache->AddResourceDir(env->GetPlayerDataDir());
+//#endif
 
     tsystem->SetCLI();
     tsystem->SetDataPath(cliDataPath_);
@@ -277,8 +288,8 @@ void AtomicTool::Start()
 
         if (!tsystem->LoadProject(projectFile))
         {
-            ErrorExit(ToString("Failed to load project: %s", projectFile.CString()));
-            return;
+            //ErrorExit(ToString("Failed to load project: %s", projectFile.CString()));
+            //return;
         }
 
         // Set the build path
@@ -344,6 +355,3 @@ void AtomicTool::ErrorExit(const String& message)
 
 
 }
-
-
-

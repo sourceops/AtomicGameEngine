@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,24 +20,31 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
-#include "../Resource/Decompress.h"
+#include "../Core/Profiler.h"
 #include "../IO/File.h"
 #include "../IO/FileSystem.h"
 #include "../IO/Log.h"
-#include "../Core/Profiler.h"
+#include "../Resource/Decompress.h"
 
-#include <cstdlib>
-#include <cstring>
-#include <STB/stb_image.h>
-#include <STB/stb_image_write.h>
 #include <JO/jo_jpeg.h>
+
+// ATOMIC BEGIN
 #include <SDL/include/SDL_surface.h>
 
-#include "../DebugNew.h"
+#ifdef ATOMIC_PLATFORM_DESKTOP
+#include <libsquish/squish.h>
+#endif
 
-extern "C" unsigned char *stbi_write_png_to_mem(unsigned char *pixels, int stride_bytes, int x, int y, int n, int *out_len);
+// ATOMIC END
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <STB/stb_image.h>
+#include <STB/stb_image_write.h>
+#include "../DebugNew.h"
 
 #ifndef MAKEFOURCC
 #define MAKEFOURCC(ch0, ch1, ch2, ch3) ((unsigned)(ch0) | ((unsigned)(ch1) << 8) | ((unsigned)(ch2) << 16) | ((unsigned)(ch3) << 24))
@@ -48,6 +55,57 @@ extern "C" unsigned char *stbi_write_png_to_mem(unsigned char *pixels, int strid
 #define FOURCC_DXT3 (MAKEFOURCC('D','X','T','3'))
 #define FOURCC_DXT4 (MAKEFOURCC('D','X','T','4'))
 #define FOURCC_DXT5 (MAKEFOURCC('D','X','T','5'))
+#define FOURCC_DX10 (MAKEFOURCC('D','X','1','0'))
+
+static const unsigned DDSCAPS_COMPLEX = 0x00000008U;
+static const unsigned DDSCAPS_TEXTURE = 0x00001000U;
+static const unsigned DDSCAPS_MIPMAP = 0x00400000U;
+static const unsigned DDSCAPS2_VOLUME = 0x00200000U;
+static const unsigned DDSCAPS2_CUBEMAP = 0x00000200U;
+
+static const unsigned DDSCAPS2_CUBEMAP_POSITIVEX = 0x00000400U;
+static const unsigned DDSCAPS2_CUBEMAP_NEGATIVEX = 0x00000800U;
+static const unsigned DDSCAPS2_CUBEMAP_POSITIVEY = 0x00001000U;
+static const unsigned DDSCAPS2_CUBEMAP_NEGATIVEY = 0x00002000U;
+static const unsigned DDSCAPS2_CUBEMAP_POSITIVEZ = 0x00004000U;
+static const unsigned DDSCAPS2_CUBEMAP_NEGATIVEZ = 0x00008000U;
+static const unsigned DDSCAPS2_CUBEMAP_ALL_FACES = 0x0000FC00U;
+
+// DX10 flags
+static const unsigned DDS_DIMENSION_TEXTURE1D = 2;
+static const unsigned DDS_DIMENSION_TEXTURE2D = 3;
+static const unsigned DDS_DIMENSION_TEXTURE3D = 4;
+
+static const unsigned DDS_RESOURCE_MISC_TEXTURECUBE = 0x4;
+
+static const unsigned DDS_DXGI_FORMAT_R8G8B8A8_UNORM = 28;
+static const unsigned DDS_DXGI_FORMAT_R8G8B8A8_UNORM_SRGB = 26;
+static const unsigned DDS_DXGI_FORMAT_BC1_UNORM = 71;
+static const unsigned DDS_DXGI_FORMAT_BC1_UNORM_SRGB = 72;
+static const unsigned DDS_DXGI_FORMAT_BC2_UNORM = 74;
+static const unsigned DDS_DXGI_FORMAT_BC2_UNORM_SRGB = 75;
+static const unsigned DDS_DXGI_FORMAT_BC3_UNORM = 77;
+static const unsigned DDS_DXGI_FORMAT_BC3_UNORM_SRGB = 78;
+
+// ATOMIC BEGIN
+static const unsigned DDSD_CAPS = 0x00000001;
+static const unsigned DDSD_HEIGHT = 0x00000002;
+static const unsigned DDSD_WIDTH = 0x00000004;
+static const unsigned DDSD_PITCH = 0x00000008;
+static const unsigned DDSD_PIXELFORMAT = 0x00001000;
+static const unsigned DDSD_MIPMAPCOUNT = 0x00020000;
+static const unsigned DDSD_LINEARSIZE = 0x00080000;
+static const unsigned DDSD_DEPTH = 0x00800000;
+
+static const unsigned DDPF_ALPHAPIXELS = 0x00000001;
+static const unsigned DDPF_ALPHA = 0x00000002;
+static const unsigned DDPF_FOURCC = 0x00000004;
+static const unsigned DDPF_PALETTEINDEXED8 = 0x00000020;
+static const unsigned DDPF_RGB = 0x00000040;
+static const unsigned DDPF_LUMINANCE = 0x00020000;
+static const unsigned DDPF_NORMAL = 0x80000000;  // nvidia specific
+// ATOMIC END
+
 
 namespace Atomic
 {
@@ -126,6 +184,15 @@ struct DDSCaps2
     };
 };
 
+struct DDSHeader10
+{
+    unsigned dxgiFormat;
+    unsigned resourceDimension;
+    unsigned miscFlag;
+    unsigned arraySize;
+    unsigned reserved;
+};
+
 /// DirectDraw surface description.
 struct DDSurfaceDesc2
 {
@@ -194,8 +261,8 @@ bool CompressedLevel::Decompress(unsigned char* dest)
         return true;
 
     default:
-         // Unknown format
-         return false;
+        // Unknown format
+        return false;
     }
 }
 
@@ -204,7 +271,12 @@ Image::Image(Context* context) :
     width_(0),
     height_(0),
     depth_(0),
-    components_(0)
+    components_(0),
+    numCompressedLevels_(0),
+    cubemap_(false),
+    array_(false),
+    sRGB_(false),
+    compressedFormat_(CF_NONE)
 {
 }
 
@@ -228,7 +300,50 @@ bool Image::BeginLoad(Deserializer& source)
         DDSurfaceDesc2 ddsd;
         source.Read(&ddsd, sizeof(ddsd));
 
-        switch (ddsd.ddpfPixelFormat_.dwFourCC_)
+        // DDS DX10+
+        const bool hasDXGI = ddsd.ddpfPixelFormat_.dwFourCC_ == FOURCC_DX10;
+        DDSHeader10 dxgiHeader;
+        if (hasDXGI)
+            source.Read(&dxgiHeader, sizeof(dxgiHeader));
+
+        unsigned fourCC = ddsd.ddpfPixelFormat_.dwFourCC_;
+
+        // If the DXGI header is available then remap formats and check sRGB
+        if (hasDXGI)
+        {
+            switch (dxgiHeader.dxgiFormat)
+            {
+            case DDS_DXGI_FORMAT_BC1_UNORM:
+            case DDS_DXGI_FORMAT_BC1_UNORM_SRGB:
+                fourCC = FOURCC_DXT1;
+                break;
+            case DDS_DXGI_FORMAT_BC2_UNORM:
+            case DDS_DXGI_FORMAT_BC2_UNORM_SRGB:
+                fourCC = FOURCC_DXT3;
+                break;
+            case DDS_DXGI_FORMAT_BC3_UNORM:
+            case DDS_DXGI_FORMAT_BC3_UNORM_SRGB:
+                fourCC = FOURCC_DXT5;
+                break;
+            case DDS_DXGI_FORMAT_R8G8B8A8_UNORM:
+            case DDS_DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+                fourCC = 0;
+                break;
+            default:
+                ATOMIC_LOGERROR("Unrecognized DDS DXGI image format");
+                return false;
+            }
+
+            // Check the internal sRGB formats
+            if (dxgiHeader.dxgiFormat == DDS_DXGI_FORMAT_BC1_UNORM_SRGB ||
+                dxgiHeader.dxgiFormat == DDS_DXGI_FORMAT_BC2_UNORM_SRGB ||
+                dxgiHeader.dxgiFormat == DDS_DXGI_FORMAT_BC3_UNORM_SRGB ||
+                dxgiHeader.dxgiFormat == DDS_DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+            {
+                sRGB_ = true;
+            }
+        }
+        switch (fourCC)
         {
         case FOURCC_DXT1:
             compressedFormat_ = CF_DXT1;
@@ -249,70 +364,139 @@ bool Image::BeginLoad(Deserializer& source)
             if (ddsd.ddpfPixelFormat_.dwRGBBitCount_ != 32 && ddsd.ddpfPixelFormat_.dwRGBBitCount_ != 24 &&
                 ddsd.ddpfPixelFormat_.dwRGBBitCount_ != 16)
             {
-                LOGERROR("Unsupported DDS pixel byte size");
+                ATOMIC_LOGERROR("Unsupported DDS pixel byte size");
                 return false;
             }
             compressedFormat_ = CF_RGBA;
             components_ = 4;
             break;
-            
+
         default:
-            LOGERROR("Unrecognized DDS image format");
+            ATOMIC_LOGERROR("Unrecognized DDS image format");
             return false;
         }
 
-        unsigned dataSize = source.GetSize() - source.GetPosition();
-        data_ = new unsigned char[dataSize];
-        width_ = ddsd.dwWidth_;
-        height_ = ddsd.dwHeight_;
-        depth_ = ddsd.dwDepth_;
-        numCompressedLevels_ = ddsd.dwMipMapCount_;
-        if (!numCompressedLevels_)
-            numCompressedLevels_ = 1;
-        SetMemoryUse(dataSize);
-        source.Read(data_.Get(), dataSize);
-        
+        // Is it a cube map or texture array? If so determine the size of the image chain.
+        cubemap_ = (ddsd.ddsCaps_.dwCaps2_ & DDSCAPS2_CUBEMAP_ALL_FACES) != 0 || (hasDXGI && (dxgiHeader.miscFlag & DDS_RESOURCE_MISC_TEXTURECUBE) != 0);
+        unsigned imageChainCount = 1;
+        if (cubemap_)
+            imageChainCount = 6;
+        else if (hasDXGI && dxgiHeader.arraySize > 1)
+        {
+            imageChainCount = dxgiHeader.arraySize;
+            array_ = true;
+        }
+
+        // Calculate the size of the data
+        unsigned dataSize = 0;
+        if (compressedFormat_ != CF_RGBA)
+        {
+            const unsigned blockSize = compressedFormat_ == CF_DXT1 ? 8 : 16; //DXT1/BC1 is 8 bytes, DXT3/BC2 and DXT5/BC3 are 16 bytes
+            // Add 3 to ensure valid block: ie 2x2 fits uses a whole 4x4 block
+            unsigned blocksWide = (ddsd.dwWidth_ + 3) / 4;
+            unsigned blocksHeight = (ddsd.dwHeight_ + 3) / 4;
+            dataSize = blocksWide * blocksHeight * blockSize;
+
+            // Calculate mip data size
+            unsigned x = ddsd.dwWidth_ / 2;
+            unsigned y = ddsd.dwHeight_ / 2;
+            unsigned z = ddsd.dwDepth_ / 2;
+            for (unsigned level = ddsd.dwMipMapCount_; level > 1; x /= 2, y /= 2, z /= 2, --level)
+            {
+                blocksWide = (Max(x, 1U) + 3) / 4;
+                blocksHeight = (Max(y, 1U) + 3) / 4;
+                dataSize += blockSize * blocksWide * blocksHeight * Max(z, 1U);
+            }
+        }
+        else
+        {
+            dataSize = (ddsd.ddpfPixelFormat_.dwRGBBitCount_ / 8) * ddsd.dwWidth_ * ddsd.dwHeight_ * Max(ddsd.dwDepth_, 1U);
+            // Calculate mip data size
+            unsigned x = ddsd.dwWidth_ / 2;
+            unsigned y = ddsd.dwHeight_ / 2;
+            unsigned z = ddsd.dwDepth_ / 2;
+            for (unsigned level = ddsd.dwMipMapCount_; level > 1; x /= 2, y /= 2, z /= 2, --level)
+                dataSize += (ddsd.ddpfPixelFormat_.dwRGBBitCount_ / 8) * Max(x, 1U) * Max(y, 1U) * Max(z, 1U);
+        }
+
+        // Do not use a shared ptr here, in case nothing is refcounting the image outside this function.
+        // A raw pointer is fine as the image chain (if needed) uses shared ptr's properly
+        Image* currentImage = this;
+
+        for (unsigned faceIndex = 0; faceIndex < imageChainCount; ++faceIndex)
+        {
+            currentImage->data_ = new unsigned char[dataSize];
+            currentImage->cubemap_ = cubemap_;
+            currentImage->array_ = array_;
+            currentImage->components_ = components_;
+            currentImage->compressedFormat_ = compressedFormat_;
+            currentImage->width_ = ddsd.dwWidth_;
+            currentImage->height_ = ddsd.dwHeight_;
+            currentImage->depth_ = ddsd.dwDepth_;
+
+            currentImage->numCompressedLevels_ = ddsd.dwMipMapCount_;
+            if (!currentImage->numCompressedLevels_)
+                currentImage->numCompressedLevels_ = 1;
+
+            // Memory use needs to be exact per image as it's used for verifying the data size in GetCompressedLevel()
+            // even though it would be more proper for the first image to report the size of all siblings combined
+            currentImage->SetMemoryUse(dataSize);
+
+            source.Read(currentImage->data_.Get(), dataSize);
+
+            if (faceIndex < imageChainCount - 1)
+            {
+                // Build the image chain
+                SharedPtr<Image> nextImage(new Image(context_));
+                currentImage->nextSibling_ = nextImage;
+                currentImage = nextImage;
+            }
+        }
+
         // If uncompressed DDS, convert the data to 8bit RGBA as the texture classes can not currently use eg. RGB565 format
         if (compressedFormat_ == CF_RGBA)
         {
-            PROFILE(ConvertDDSToRGBA);
-            
-            unsigned sourcePixelByteSize = ddsd.ddpfPixelFormat_.dwRGBBitCount_ >> 3;
-            unsigned numPixels = dataSize / sourcePixelByteSize;
-            
-            #define ADJUSTSHIFT(mask, l, r) \
+            ATOMIC_PROFILE(ConvertDDSToRGBA);
+
+            currentImage = this;
+
+            while (currentImage)
+            {
+                unsigned sourcePixelByteSize = ddsd.ddpfPixelFormat_.dwRGBBitCount_ >> 3;
+                unsigned numPixels = dataSize / sourcePixelByteSize;
+
+#define ADJUSTSHIFT(mask, l, r) \
                 if (mask && mask >= 0x100) \
                 { \
                     while ((mask >> r) >= 0x100) \
-                        ++r; \
+                    ++r; \
                 } \
                 else if (mask && mask < 0x80) \
                 { \
                     while ((mask << l) < 0x80) \
-                        ++l; \
+                    ++l; \
                 }
-            
-            unsigned rShiftL = 0, gShiftL = 0, bShiftL = 0, aShiftL = 0;
-            unsigned rShiftR = 0, gShiftR = 0, bShiftR = 0, aShiftR = 0;
-            unsigned rMask = ddsd.ddpfPixelFormat_.dwRBitMask_;
-            unsigned gMask = ddsd.ddpfPixelFormat_.dwGBitMask_;
-            unsigned bMask = ddsd.ddpfPixelFormat_.dwBBitMask_;
-            unsigned aMask = ddsd.ddpfPixelFormat_.dwRGBAlphaBitMask_;
-            ADJUSTSHIFT(rMask, rShiftL, rShiftR)
-            ADJUSTSHIFT(gMask, gShiftL, gShiftR)
-            ADJUSTSHIFT(bMask, bShiftL, bShiftR)
-            ADJUSTSHIFT(aMask, aShiftL, aShiftR)
-            
-            SharedArrayPtr<unsigned char> rgbaData(new unsigned char[numPixels * 4]);
-            SetMemoryUse(numPixels * 4);
-            
-            switch (sourcePixelByteSize)
-            {
-            case 4:
+
+                unsigned rShiftL = 0, gShiftL = 0, bShiftL = 0, aShiftL = 0;
+                unsigned rShiftR = 0, gShiftR = 0, bShiftR = 0, aShiftR = 0;
+                unsigned rMask = ddsd.ddpfPixelFormat_.dwRBitMask_;
+                unsigned gMask = ddsd.ddpfPixelFormat_.dwGBitMask_;
+                unsigned bMask = ddsd.ddpfPixelFormat_.dwBBitMask_;
+                unsigned aMask = ddsd.ddpfPixelFormat_.dwRGBAlphaBitMask_;
+                ADJUSTSHIFT(rMask, rShiftL, rShiftR)
+                ADJUSTSHIFT(gMask, gShiftL, gShiftR)
+                ADJUSTSHIFT(bMask, bShiftL, bShiftR)
+                ADJUSTSHIFT(aMask, aShiftL, aShiftR)
+
+                SharedArrayPtr<unsigned char> rgbaData(new unsigned char[numPixels * 4]);
+
+                switch (sourcePixelByteSize)
                 {
-                    unsigned* src = (unsigned*)data_.Get();
+                case 4:
+                {
+                    unsigned* src = (unsigned*)currentImage->data_.Get();
                     unsigned char* dest = rgbaData.Get();
-                    
+
                     while (numPixels--)
                     {
                         unsigned pixels = *src++;
@@ -323,12 +507,12 @@ bool Image::BeginLoad(Deserializer& source)
                     }
                 }
                 break;
-                
-            case 3:
+
+                case 3:
                 {
-                    unsigned char* src = data_.Get();
+                    unsigned char* src = currentImage->data_.Get();
                     unsigned char* dest = rgbaData.Get();
-                    
+
                     while (numPixels--)
                     {
                         unsigned pixels = src[0] | (src[1] << 8) | (src[2] << 16);
@@ -340,12 +524,12 @@ bool Image::BeginLoad(Deserializer& source)
                     }
                 }
                 break;
-                
-            default:
+
+                default:
                 {
-                    unsigned short* src = (unsigned short*)data_.Get();
+                    unsigned short* src = (unsigned short*)currentImage->data_.Get();
                     unsigned char* dest = rgbaData.Get();
-                    
+
                     while (numPixels--)
                     {
                         unsigned short pixels = *src++;
@@ -356,10 +540,13 @@ bool Image::BeginLoad(Deserializer& source)
                     }
                 }
                 break;
+                }
+
+                // Replace with converted data
+                currentImage->data_ = rgbaData;
+                currentImage->SetMemoryUse(numPixels * 4);
+                currentImage = currentImage->GetNextSibling();
             }
-            
-            // Replace with converted data
-            data_ = rgbaData;
         }
     }
     else if (fileID == "\253KTX")
@@ -382,29 +569,28 @@ bool Image::BeginLoad(Deserializer& source)
 
         if (endianness != 0x04030201)
         {
-            LOGERROR("Big-endian KTX files not supported");
+            ATOMIC_LOGERROR("Big-endian KTX files not supported");
             return false;
         }
 
         if (type != 0 || format != 0)
         {
-            LOGERROR("Uncompressed KTX files not supported");
+            ATOMIC_LOGERROR("Uncompressed KTX files not supported");
             return false;
         }
 
         if (faces > 1 || depth > 1)
         {
-            LOGERROR("3D or cube KTX files not supported");
+            ATOMIC_LOGERROR("3D or cube KTX files not supported");
             return false;
         }
 
         if (mipmaps == 0)
         {
-            LOGERROR("KTX files without explicitly specified mipmap count not supported");
+            ATOMIC_LOGERROR("KTX files without explicitly specified mipmap count not supported");
             return false;
         }
 
-        compressedFormat_ = CF_NONE;
         switch (internalFormat)
         {
         case 0x83f1:
@@ -446,16 +632,20 @@ bool Image::BeginLoad(Deserializer& source)
             compressedFormat_ = CF_PVRTC_RGBA_2BPP;
             components_ = 4;
             break;
+
+        default:
+            compressedFormat_ = CF_NONE;
+            break;
         }
 
         if (compressedFormat_ == CF_NONE)
         {
-            LOGERROR("Unsupported texture format in KTX file");
+            ATOMIC_LOGERROR("Unsupported texture format in KTX file");
             return false;
         }
 
         source.Seek(source.GetPosition() + keyValueBytes);
-        unsigned dataSize = source.GetSize() - source.GetPosition() - mipmaps * sizeof(unsigned);
+        unsigned dataSize = (unsigned)(source.GetSize() - source.GetPosition() - mipmaps * sizeof(unsigned));
 
         data_ = new unsigned char[dataSize];
         width_ = width;
@@ -468,7 +658,7 @@ bool Image::BeginLoad(Deserializer& source)
             unsigned levelSize = source.ReadUInt();
             if (levelSize + dataOffset > dataSize)
             {
-                LOGERROR("KTX mipmap level data size exceeds file size");
+                ATOMIC_LOGERROR("KTX mipmap level data size exceeds file size");
                 return false;
             }
 
@@ -497,17 +687,16 @@ bool Image::BeginLoad(Deserializer& source)
 
         if (depth > 1 || numFaces > 1)
         {
-            LOGERROR("3D or cube PVR files not supported");
+            ATOMIC_LOGERROR("3D or cube PVR files not supported");
             return false;
         }
 
         if (mipmapCount == 0)
         {
-            LOGERROR("PVR files without explicitly specified mipmap count not supported");
+            ATOMIC_LOGERROR("PVR files without explicitly specified mipmap count not supported");
             return false;
         }
 
-        compressedFormat_ = CF_NONE;
         switch (pixelFormatLo)
         {
         case 0:
@@ -549,11 +738,15 @@ bool Image::BeginLoad(Deserializer& source)
             compressedFormat_ = CF_DXT5;
             components_ = 4;
             break;
+
+        default:
+            compressedFormat_ = CF_NONE;
+            break;
         }
 
         if (compressedFormat_ == CF_NONE)
         {
-            LOGERROR("Unsupported texture format in PVR file");
+            ATOMIC_LOGERROR("Unsupported texture format in PVR file");
             return false;
         }
 
@@ -577,7 +770,7 @@ bool Image::BeginLoad(Deserializer& source)
         unsigned char* pixelData = GetImageData(source, width, height, components);
         if (!pixelData)
         {
-            LOGERROR("Could not load image " + source.GetName() + ": " + String(stbi_failure_reason()));
+            ATOMIC_LOGERROR("Could not load image " + source.GetName() + ": " + String(stbi_failure_reason()));
             return false;
         }
         SetSize(width, height, components);
@@ -590,23 +783,23 @@ bool Image::BeginLoad(Deserializer& source)
 
 bool Image::Save(Serializer& dest) const
 {
-    PROFILE(SaveImage);
+    ATOMIC_PROFILE(SaveImage);
 
     if (IsCompressed())
     {
-        LOGERROR("Can not save compressed image " + GetName());
+        ATOMIC_LOGERROR("Can not save compressed image " + GetName());
         return false;
     }
 
     if (!data_)
     {
-        LOGERROR("Can not save zero-sized image " + GetName());
+        ATOMIC_LOGERROR("Can not save zero-sized image " + GetName());
         return false;
     }
 
     int len;
-    unsigned char *png = stbi_write_png_to_mem(data_.Get(), 0, width_, height_, components_, &len);
-    bool success = dest.Write(png, len) == (unsigned)len;
+    unsigned char* png = stbi_write_png_to_mem(data_.Get(), 0, width_, height_, components_, &len);
+    bool success = dest.Write(png, (unsigned)len) == (unsigned)len;
     free(png);
     return success;
 }
@@ -627,7 +820,7 @@ bool Image::SetSize(int width, int height, int depth, unsigned components)
 
     if (components > 4)
     {
-        LOGERROR("More than 4 color components are not supported");
+        ATOMIC_LOGERROR("More than 4 color components are not supported");
         return false;
     }
 
@@ -676,7 +869,7 @@ void Image::SetPixelInt(int x, int y, int z, unsigned uintColor)
         dest[2] = src[2];
         // Fall through
     case 2:
-        dest[1]= src[1];
+        dest[1] = src[1];
         // Fall through
     default:
         dest[0] = src[0];
@@ -691,7 +884,7 @@ void Image::SetData(const unsigned char* pixelData)
 
     if (IsCompressed())
     {
-        LOGERROR("Can not set new pixel data for a compressed image");
+        ATOMIC_LOGERROR("Can not set new pixel data for a compressed image");
         return;
     }
 
@@ -705,7 +898,7 @@ bool Image::LoadColorLUT(Deserializer& source)
 
     if (fileID == "DDS " || fileID == "\253KTX" || fileID == "PVR\3")
     {
-        LOGERROR("Invalid image format, can not load image");
+        ATOMIC_LOGERROR("Invalid image format, can not load image");
         return false;
     }
 
@@ -715,12 +908,12 @@ bool Image::LoadColorLUT(Deserializer& source)
     unsigned char* pixelDataIn = GetImageData(source, width, height, components);
     if (!pixelDataIn)
     {
-        LOGERROR("Could not load image " + source.GetName() + ": " + String(stbi_failure_reason()));
+        ATOMIC_LOGERROR("Could not load image " + source.GetName() + ": " + String(stbi_failure_reason()));
         return false;
     }
     if (components != 3)
     {
-        LOGERROR("Invalid image format, can not load image");
+        ATOMIC_LOGERROR("Invalid image format, can not load image");
         return false;
     }
 
@@ -739,8 +932,8 @@ bool Image::LoadColorLUT(Deserializer& source)
             for (int x = 0; x < width_ * 3; x += 3)
             {
                 out[x] = in[x];
-                out[x+1] = in[x + 1];
-                out[x+2] = in[x + 2];
+                out[x + 1] = in[x + 1];
+                out[x + 2] = in[x + 2];
             }
         }
     }
@@ -757,7 +950,7 @@ bool Image::FlipHorizontal()
 
     if (depth_ > 1)
     {
-        LOGERROR("FlipHorizontal not supported for 3D images");
+        ATOMIC_LOGERROR("FlipHorizontal not supported for 3D images");
         return false;
     }
 
@@ -774,30 +967,30 @@ bool Image::FlipHorizontal()
                     newData[y * rowSize + x * components_ + c] = data_[y * rowSize + (width_ - x - 1) * components_ + c];
             }
         }
-        
+
         data_ = newData;
     }
     else
     {
         if (compressedFormat_ > CF_DXT5)
         {
-            LOGERROR("FlipHorizontal not yet implemented for other compressed formats than RGBA & DXT1,3,5");
+            ATOMIC_LOGERROR("FlipHorizontal not yet implemented for other compressed formats than RGBA & DXT1,3,5");
             return false;
         }
-        
+
         // Memory use = combined size of the compressed mip levels
         SharedArrayPtr<unsigned char> newData(new unsigned char[GetMemoryUse()]);
         unsigned dataOffset = 0;
-        
+
         for (unsigned i = 0; i < numCompressedLevels_; ++i)
         {
             CompressedLevel level = GetCompressedLevel(i);
             if (!level.data_)
             {
-                LOGERROR("Got compressed level with no data, aborting horizontal flip");
+                ATOMIC_LOGERROR("Got compressed level with no data, aborting horizontal flip");
                 return false;
             }
-            
+
             for (unsigned y = 0; y < level.rows_; ++y)
             {
                 for (unsigned x = 0; x < level.rowSize_; x += level.blockSize_)
@@ -807,13 +1000,13 @@ bool Image::FlipHorizontal()
                     FlipBlockHorizontal(dest, src, compressedFormat_);
                 }
             }
-            
+
             dataOffset += level.dataSize_;
         }
-        
+
         data_ = newData;
     }
-    
+
     return true;
 }
 
@@ -824,7 +1017,7 @@ bool Image::FlipVertical()
 
     if (depth_ > 1)
     {
-        LOGERROR("FlipVertical not supported for 3D images");
+        ATOMIC_LOGERROR("FlipVertical not supported for 3D images");
         return false;
     }
 
@@ -842,54 +1035,54 @@ bool Image::FlipVertical()
     {
         if (compressedFormat_ > CF_DXT5)
         {
-            LOGERROR("FlipVertical not yet implemented for other compressed formats than DXT1,3,5");
+            ATOMIC_LOGERROR("FlipVertical not yet implemented for other compressed formats than DXT1,3,5");
             return false;
         }
-        
+
         // Memory use = combined size of the compressed mip levels
         SharedArrayPtr<unsigned char> newData(new unsigned char[GetMemoryUse()]);
         unsigned dataOffset = 0;
-        
+
         for (unsigned i = 0; i < numCompressedLevels_; ++i)
         {
             CompressedLevel level = GetCompressedLevel(i);
             if (!level.data_)
             {
-                LOGERROR("Got compressed level with no data, aborting vertical flip");
+                ATOMIC_LOGERROR("Got compressed level with no data, aborting vertical flip");
                 return false;
             }
-            
+
             for (unsigned y = 0; y < level.rows_; ++y)
             {
                 unsigned char* src = level.data_ + y * level.rowSize_;
                 unsigned char* dest = newData.Get() + dataOffset + (level.rows_ - y - 1) * level.rowSize_;
-                
+
                 for (unsigned x = 0; x < level.rowSize_; x += level.blockSize_)
                     FlipBlockVertical(dest + x, src + x, compressedFormat_);
             }
-            
+
             dataOffset += level.dataSize_;
         }
-        
+
         data_ = newData;
     }
-    
+
     return true;
 }
 
 bool Image::Resize(int width, int height)
 {
-    PROFILE(ResizeImage);
+    ATOMIC_PROFILE(ResizeImage);
 
     if (IsCompressed())
     {
-        LOGERROR("Resize not supported for compressed images");
+        ATOMIC_LOGERROR("Resize not supported for compressed images");
         return false;
     }
 
     if (depth_ > 1)
     {
-        LOGERROR("Resize not supported for 3D images");
+        ATOMIC_LOGERROR("Resize not supported for 3D images");
         return false;
     }
 
@@ -941,36 +1134,47 @@ void Image::Clear(const Color& color)
 
 void Image::ClearInt(unsigned uintColor)
 {
-    PROFILE(ClearImage);
+    ATOMIC_PROFILE(ClearImage);
 
     if (!data_)
         return;
 
     if (IsCompressed())
     {
-        LOGERROR("Clear not supported for compressed images");
+        ATOMIC_LOGERROR("Clear not supported for compressed images");
         return;
     }
 
-    unsigned char* src = (unsigned char*)&uintColor;
-    for (unsigned i = 0; i < width_ * height_ * depth_ * components_; ++i)
-        data_[i] = src[i % components_];
+    if (components_ == 4)
+    {
+        unsigned color = uintColor;
+        unsigned* data = (unsigned*)GetData();
+        unsigned* data_end = (unsigned*)(GetData() + width_ * height_ * depth_ * components_);
+        for (; data < data_end; ++data)
+            *data = color;
+    }
+    else
+    {
+        unsigned char* src = (unsigned char*)&uintColor;
+        for (unsigned i = 0; i < width_ * height_ * depth_ * components_; ++i)
+            data_[i] = src[i % components_];
+    }
 }
 
 bool Image::SaveBMP(const String& fileName) const
 {
-    PROFILE(SaveImageBMP);
+    ATOMIC_PROFILE(SaveImageBMP);
 
     FileSystem* fileSystem = GetSubsystem<FileSystem>();
     if (fileSystem && !fileSystem->CheckAccess(GetPath(fileName)))
     {
-        LOGERROR("Access denied to " + fileName);
+        ATOMIC_LOGERROR("Access denied to " + fileName);
         return false;
     }
 
     if (IsCompressed())
     {
-        LOGERROR("Can not save compressed image to BMP");
+        ATOMIC_LOGERROR("Can not save compressed image to BMP");
         return false;
     }
 
@@ -982,41 +1186,29 @@ bool Image::SaveBMP(const String& fileName) const
 
 bool Image::SavePNG(const String& fileName) const
 {
-    PROFILE(SaveImagePNG);
+    ATOMIC_PROFILE(SaveImagePNG);
 
-    FileSystem* fileSystem = GetSubsystem<FileSystem>();
-    if (fileSystem && !fileSystem->CheckAccess(GetPath(fileName)))
-    {
-        LOGERROR("Access denied to " + fileName);
-        return false;
-    }
-
-    if (IsCompressed())
-    {
-        LOGERROR("Can not save compressed image to PNG");
-        return false;
-    }
-
-    if (data_)
-        return stbi_write_png(GetNativePath(fileName).CString(), width_, height_, components_, data_.Get(), 0) != 0;
+    File outFile(context_, fileName, FILE_WRITE);
+    if (outFile.IsOpen())
+        return Image::Save(outFile); // Save uses PNG format
     else
         return false;
 }
 
 bool Image::SaveTGA(const String& fileName) const
 {
-    PROFILE(SaveImageTGA);
+    ATOMIC_PROFILE(SaveImageTGA);
 
     FileSystem* fileSystem = GetSubsystem<FileSystem>();
     if (fileSystem && !fileSystem->CheckAccess(GetPath(fileName)))
     {
-        LOGERROR("Access denied to " + fileName);
+        ATOMIC_LOGERROR("Access denied to " + fileName);
         return false;
     }
 
     if (IsCompressed())
     {
-        LOGERROR("Can not save compressed image to TGA");
+        ATOMIC_LOGERROR("Can not save compressed image to TGA");
         return false;
     }
 
@@ -1026,20 +1218,20 @@ bool Image::SaveTGA(const String& fileName) const
         return false;
 }
 
-bool Image::SaveJPG(const String & fileName, int quality) const
+bool Image::SaveJPG(const String& fileName, int quality) const
 {
-    PROFILE(SaveImageJPG);
+    ATOMIC_PROFILE(SaveImageJPG);
 
     FileSystem* fileSystem = GetSubsystem<FileSystem>();
     if (fileSystem && !fileSystem->CheckAccess(GetPath(fileName)))
     {
-        LOGERROR("Access denied to " + fileName);
+        ATOMIC_LOGERROR("Access denied to " + fileName);
         return false;
     }
 
     if (IsCompressed())
     {
-        LOGERROR("Can not save compressed image to JPG");
+        ATOMIC_LOGERROR("Can not save compressed image to JPG");
         return false;
     }
 
@@ -1169,19 +1361,19 @@ SharedPtr<Image> Image::GetNextLevel() const
 {
     if (IsCompressed())
     {
-        LOGERROR("Can not generate mip level from compressed data");
+        ATOMIC_LOGERROR("Can not generate mip level from compressed data");
         return SharedPtr<Image>();
     }
     if (components_ < 1 || components_ > 4)
     {
-        LOGERROR("Illegal number of image components for mip level generation");
+        ATOMIC_LOGERROR("Illegal number of image components for mip level generation");
         return SharedPtr<Image>();
     }
 
     if (nextLevel_)
         return nextLevel_;
 
-    PROFILE(CalculateImageMipLevel);
+    ATOMIC_PROFILE(CalculateImageMipLevel);
 
     int widthOut = width_ / 2;
     int heightOut = height_ / 2;
@@ -1215,34 +1407,38 @@ SharedPtr<Image> Image::GetNextLevel() const
         {
         case 1:
             for (int x = 0; x < widthOut; ++x)
-                pixelDataOut[x] = ((unsigned)pixelDataIn[x*2] + pixelDataIn[x*2+1]) >> 1;
+                pixelDataOut[x] = (unsigned char)(((unsigned)pixelDataIn[x * 2] + pixelDataIn[x * 2 + 1]) >> 1);
             break;
 
         case 2:
-            for (int x = 0; x < widthOut*2; x += 2)
+            for (int x = 0; x < widthOut * 2; x += 2)
             {
-                pixelDataOut[x] = ((unsigned)pixelDataIn[x*2] + pixelDataIn[x*2+2]) >> 1;
-                pixelDataOut[x+1] = ((unsigned)pixelDataIn[x*2+1] + pixelDataIn[x*2+3]) >> 1;
+                pixelDataOut[x] = (unsigned char)(((unsigned)pixelDataIn[x * 2] + pixelDataIn[x * 2 + 2]) >> 1);
+                pixelDataOut[x + 1] = (unsigned char)(((unsigned)pixelDataIn[x * 2 + 1] + pixelDataIn[x * 2 + 3]) >> 1);
             }
             break;
 
         case 3:
-            for (int x = 0; x < widthOut*3; x += 3)
+            for (int x = 0; x < widthOut * 3; x += 3)
             {
-                pixelDataOut[x] = ((unsigned)pixelDataIn[x*2] + pixelDataIn[x*2+3]) >> 1;
-                pixelDataOut[x+1] = ((unsigned)pixelDataIn[x*2+1] + pixelDataIn[x*2+4]) >> 1;
-                pixelDataOut[x+2] = ((unsigned)pixelDataIn[x*2+2] + pixelDataIn[x*2+5]) >> 1;
+                pixelDataOut[x] = (unsigned char)(((unsigned)pixelDataIn[x * 2] + pixelDataIn[x * 2 + 3]) >> 1);
+                pixelDataOut[x + 1] = (unsigned char)(((unsigned)pixelDataIn[x * 2 + 1] + pixelDataIn[x * 2 + 4]) >> 1);
+                pixelDataOut[x + 2] = (unsigned char)(((unsigned)pixelDataIn[x * 2 + 2] + pixelDataIn[x * 2 + 5]) >> 1);
             }
             break;
 
         case 4:
-            for (int x = 0; x < widthOut*4; x += 4)
+            for (int x = 0; x < widthOut * 4; x += 4)
             {
-                pixelDataOut[x] = ((unsigned)pixelDataIn[x*2] + pixelDataIn[x*2+4]) >> 1;
-                pixelDataOut[x+1] = ((unsigned)pixelDataIn[x*2+1] + pixelDataIn[x*2+5]) >> 1;
-                pixelDataOut[x+2] = ((unsigned)pixelDataIn[x*2+2] + pixelDataIn[x*2+6]) >> 1;
-                pixelDataOut[x+3] = ((unsigned)pixelDataIn[x*2+3] + pixelDataIn[x*2+7]) >> 1;
+                pixelDataOut[x] = (unsigned char)(((unsigned)pixelDataIn[x * 2] + pixelDataIn[x * 2 + 4]) >> 1);
+                pixelDataOut[x + 1] = (unsigned char)(((unsigned)pixelDataIn[x * 2 + 1] + pixelDataIn[x * 2 + 5]) >> 1);
+                pixelDataOut[x + 2] = (unsigned char)(((unsigned)pixelDataIn[x * 2 + 2] + pixelDataIn[x * 2 + 6]) >> 1);
+                pixelDataOut[x + 3] = (unsigned char)(((unsigned)pixelDataIn[x * 2 + 3] + pixelDataIn[x * 2 + 7]) >> 1);
             }
+            break;
+
+        default:
+            assert(false);  // Should never reach here
             break;
         }
     }
@@ -1254,13 +1450,14 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 1:
             for (int y = 0; y < heightOut; ++y)
             {
-                const unsigned char* inUpper = &pixelDataIn[(y*2)*width_];
-                const unsigned char* inLower = &pixelDataIn[(y*2+1)*width_];
-                unsigned char* out = &pixelDataOut[y*widthOut];
+                const unsigned char* inUpper = &pixelDataIn[(y * 2) * width_];
+                const unsigned char* inLower = &pixelDataIn[(y * 2 + 1) * width_];
+                unsigned char* out = &pixelDataOut[y * widthOut];
 
                 for (int x = 0; x < widthOut; ++x)
                 {
-                    out[x] = ((unsigned)inUpper[x*2] + inUpper[x*2+1] + inLower[x*2] + inLower[x*2+1]) >> 2;
+                    out[x] = (unsigned char)(((unsigned)inUpper[x * 2] + inUpper[x * 2 + 1] +
+                                              inLower[x * 2] + inLower[x * 2 + 1]) >> 2);
                 }
             }
             break;
@@ -1268,14 +1465,16 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 2:
             for (int y = 0; y < heightOut; ++y)
             {
-                const unsigned char* inUpper = &pixelDataIn[(y*2)*width_*2];
-                const unsigned char* inLower = &pixelDataIn[(y*2+1)*width_*2];
-                unsigned char* out = &pixelDataOut[y*widthOut*2];
+                const unsigned char* inUpper = &pixelDataIn[(y * 2) * width_ * 2];
+                const unsigned char* inLower = &pixelDataIn[(y * 2 + 1) * width_ * 2];
+                unsigned char* out = &pixelDataOut[y * widthOut * 2];
 
-                for (int x = 0; x < widthOut*2; x += 2)
+                for (int x = 0; x < widthOut * 2; x += 2)
                 {
-                    out[x] = ((unsigned)inUpper[x*2] + inUpper[x*2+2] + inLower[x*2] + inLower[x*2+2]) >> 2;
-                    out[x+1] = ((unsigned)inUpper[x*2+1] + inUpper[x*2+3] + inLower[x*2+1] + inLower[x*2+3]) >> 2;
+                    out[x] = (unsigned char)(((unsigned)inUpper[x * 2] + inUpper[x * 2 + 2] +
+                                              inLower[x * 2] + inLower[x * 2 + 2]) >> 2);
+                    out[x + 1] = (unsigned char)(((unsigned)inUpper[x * 2 + 1] + inUpper[x * 2 + 3] +
+                                                  inLower[x * 2 + 1] + inLower[x * 2 + 3]) >> 2);
                 }
             }
             break;
@@ -1283,15 +1482,18 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 3:
             for (int y = 0; y < heightOut; ++y)
             {
-                const unsigned char* inUpper = &pixelDataIn[(y*2)*width_*3];
-                const unsigned char* inLower = &pixelDataIn[(y*2+1)*width_*3];
-                unsigned char* out = &pixelDataOut[y*widthOut*3];
+                const unsigned char* inUpper = &pixelDataIn[(y * 2) * width_ * 3];
+                const unsigned char* inLower = &pixelDataIn[(y * 2 + 1) * width_ * 3];
+                unsigned char* out = &pixelDataOut[y * widthOut * 3];
 
-                for (int x = 0; x < widthOut*3; x += 3)
+                for (int x = 0; x < widthOut * 3; x += 3)
                 {
-                    out[x] = ((unsigned)inUpper[x*2] + inUpper[x*2+3] + inLower[x*2] + inLower[x*2+3]) >> 2;
-                    out[x+1] = ((unsigned)inUpper[x*2+1] + inUpper[x*2+4] + inLower[x*2+1] + inLower[x*2+4]) >> 2;
-                    out[x+2] = ((unsigned)inUpper[x*2+2] + inUpper[x*2+5] + inLower[x*2+2] + inLower[x*2+5]) >> 2;
+                    out[x] = (unsigned char)(((unsigned)inUpper[x * 2] + inUpper[x * 2 + 3] +
+                                              inLower[x * 2] + inLower[x * 2 + 3]) >> 2);
+                    out[x + 1] = (unsigned char)(((unsigned)inUpper[x * 2 + 1] + inUpper[x * 2 + 4] +
+                                                  inLower[x * 2 + 1] + inLower[x * 2 + 4]) >> 2);
+                    out[x + 2] = (unsigned char)(((unsigned)inUpper[x * 2 + 2] + inUpper[x * 2 + 5] +
+                                                  inLower[x * 2 + 2] + inLower[x * 2 + 5]) >> 2);
                 }
             }
             break;
@@ -1299,18 +1501,26 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 4:
             for (int y = 0; y < heightOut; ++y)
             {
-                const unsigned char* inUpper = &pixelDataIn[(y*2)*width_*4];
-                const unsigned char* inLower = &pixelDataIn[(y*2+1)*width_*4];
-                unsigned char* out = &pixelDataOut[y*widthOut*4];
+                const unsigned char* inUpper = &pixelDataIn[(y * 2) * width_ * 4];
+                const unsigned char* inLower = &pixelDataIn[(y * 2 + 1) * width_ * 4];
+                unsigned char* out = &pixelDataOut[y * widthOut * 4];
 
-                for (int x = 0; x < widthOut*4; x += 4)
+                for (int x = 0; x < widthOut * 4; x += 4)
                 {
-                    out[x] = ((unsigned)inUpper[x*2] + inUpper[x*2+4] + inLower[x*2] + inLower[x*2+4]) >> 2;
-                    out[x+1] = ((unsigned)inUpper[x*2+1] + inUpper[x*2+5] + inLower[x*2+1] + inLower[x*2+5]) >> 2;
-                    out[x+2] = ((unsigned)inUpper[x*2+2] + inUpper[x*2+6] + inLower[x*2+2] + inLower[x*2+6]) >> 2;
-                    out[x+3] = ((unsigned)inUpper[x*2+3] + inUpper[x*2+7] + inLower[x*2+3] + inLower[x*2+7]) >> 2;
+                    out[x] = (unsigned char)(((unsigned)inUpper[x * 2] + inUpper[x * 2 + 4] +
+                                              inLower[x * 2] + inLower[x * 2 + 4]) >> 2);
+                    out[x + 1] = (unsigned char)(((unsigned)inUpper[x * 2 + 1] + inUpper[x * 2 + 5] +
+                                                  inLower[x * 2 + 1] + inLower[x * 2 + 5]) >> 2);
+                    out[x + 2] = (unsigned char)(((unsigned)inUpper[x * 2 + 2] + inUpper[x * 2 + 6] +
+                                                  inLower[x * 2 + 2] + inLower[x * 2 + 6]) >> 2);
+                    out[x + 3] = (unsigned char)(((unsigned)inUpper[x * 2 + 3] + inUpper[x * 2 + 7] +
+                                                  inLower[x * 2 + 3] + inLower[x * 2 + 7]) >> 2);
                 }
             }
+            break;
+
+        default:
+            assert(false);  // Should never reach here
             break;
         }
     }
@@ -1322,21 +1532,23 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 1:
             for (int z = 0; z < depthOut; ++z)
             {
-                const unsigned char* inOuter = &pixelDataIn[(z*2)*width_*height_];
-                const unsigned char* inInner = &pixelDataIn[(z*2+1)*width_*height_];
+                const unsigned char* inOuter = &pixelDataIn[(z * 2) * width_ * height_];
+                const unsigned char* inInner = &pixelDataIn[(z * 2 + 1) * width_ * height_];
 
                 for (int y = 0; y < heightOut; ++y)
                 {
-                    const unsigned char* inOuterUpper = &inOuter[(y*2)*width_];
-                    const unsigned char* inOuterLower = &inOuter[(y*2+1)*width_];
-                    const unsigned char* inInnerUpper = &inInner[(y*2)*width_];
-                    const unsigned char* inInnerLower = &inInner[(y*2+1)*width_];
-                    unsigned char* out = &pixelDataOut[z*widthOut*heightOut + y*widthOut];
+                    const unsigned char* inOuterUpper = &inOuter[(y * 2) * width_];
+                    const unsigned char* inOuterLower = &inOuter[(y * 2 + 1) * width_];
+                    const unsigned char* inInnerUpper = &inInner[(y * 2) * width_];
+                    const unsigned char* inInnerLower = &inInner[(y * 2 + 1) * width_];
+                    unsigned char* out = &pixelDataOut[z * widthOut * heightOut + y * widthOut];
 
                     for (int x = 0; x < widthOut; ++x)
                     {
-                        out[x] = ((unsigned)inOuterUpper[x*2] + inOuterUpper[x*2+1] + inOuterLower[x*2] + inOuterLower[x*2+1] +
-                            inInnerUpper[x*2] + inInnerUpper[x*2+1] + inInnerLower[x*2] + inInnerLower[x*2+1]) >> 3;
+                        out[x] = (unsigned char)(((unsigned)inOuterUpper[x * 2] + inOuterUpper[x * 2 + 1] +
+                                                  inOuterLower[x * 2] + inOuterLower[x * 2 + 1] +
+                                                  inInnerUpper[x * 2] + inInnerUpper[x * 2 + 1] +
+                                                  inInnerLower[x * 2] + inInnerLower[x * 2 + 1]) >> 3);
                     }
                 }
             }
@@ -1345,23 +1557,27 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 2:
             for (int z = 0; z < depthOut; ++z)
             {
-                const unsigned char* inOuter = &pixelDataIn[(z*2)*width_*height_*2];
-                const unsigned char* inInner = &pixelDataIn[(z*2+1)*width_*height_*2];
+                const unsigned char* inOuter = &pixelDataIn[(z * 2) * width_ * height_ * 2];
+                const unsigned char* inInner = &pixelDataIn[(z * 2 + 1) * width_ * height_ * 2];
 
                 for (int y = 0; y < heightOut; ++y)
                 {
-                    const unsigned char* inOuterUpper = &inOuter[(y*2)*width_*2];
-                    const unsigned char* inOuterLower = &inOuter[(y*2+1)*width_*2];
-                    const unsigned char* inInnerUpper = &inInner[(y*2)*width_*2];
-                    const unsigned char* inInnerLower = &inInner[(y*2+1)*width_*2];
-                    unsigned char* out = &pixelDataOut[z*widthOut*heightOut*2 + y*widthOut*2];
+                    const unsigned char* inOuterUpper = &inOuter[(y * 2) * width_ * 2];
+                    const unsigned char* inOuterLower = &inOuter[(y * 2 + 1) * width_ * 2];
+                    const unsigned char* inInnerUpper = &inInner[(y * 2) * width_ * 2];
+                    const unsigned char* inInnerLower = &inInner[(y * 2 + 1) * width_ * 2];
+                    unsigned char* out = &pixelDataOut[z * widthOut * heightOut * 2 + y * widthOut * 2];
 
-                    for (int x = 0; x < widthOut*2; x += 2)
+                    for (int x = 0; x < widthOut * 2; x += 2)
                     {
-                        out[x] = ((unsigned)inOuterUpper[x*2] + inOuterUpper[x*2+2] + inOuterLower[x*2] + inOuterLower[x*2+2] +
-                            inInnerUpper[x*2] + inInnerUpper[x*2+2] + inInnerLower[x*2] + inInnerLower[x*2+2]) >> 3;
-                        out[x+1] = ((unsigned)inOuterUpper[x*2+1] + inOuterUpper[x*2+3] + inOuterLower[x*2+1] + inOuterLower[x*2+3] +
-                            inInnerUpper[x*2+1] + inInnerUpper[x*2+3] + inInnerLower[x*2+1] + inInnerLower[x*2+3]) >> 3;
+                        out[x] = (unsigned char)(((unsigned)inOuterUpper[x * 2] + inOuterUpper[x * 2 + 2] +
+                                                  inOuterLower[x * 2] + inOuterLower[x * 2 + 2] +
+                                                  inInnerUpper[x * 2] + inInnerUpper[x * 2 + 2] +
+                                                  inInnerLower[x * 2] + inInnerLower[x * 2 + 2]) >> 3);
+                        out[x + 1] = (unsigned char)(((unsigned)inOuterUpper[x * 2 + 1] + inOuterUpper[x * 2 + 3] +
+                                                      inOuterLower[x * 2 + 1] + inOuterLower[x * 2 + 3] +
+                                                      inInnerUpper[x * 2 + 1] + inInnerUpper[x * 2 + 3] +
+                                                      inInnerLower[x * 2 + 1] + inInnerLower[x * 2 + 3]) >> 3);
                     }
                 }
             }
@@ -1370,25 +1586,31 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 3:
             for (int z = 0; z < depthOut; ++z)
             {
-                const unsigned char* inOuter = &pixelDataIn[(z*2)*width_*height_*3];
-                const unsigned char* inInner = &pixelDataIn[(z*2+1)*width_*height_*3];
+                const unsigned char* inOuter = &pixelDataIn[(z * 2) * width_ * height_ * 3];
+                const unsigned char* inInner = &pixelDataIn[(z * 2 + 1) * width_ * height_ * 3];
 
                 for (int y = 0; y < heightOut; ++y)
                 {
-                    const unsigned char* inOuterUpper = &inOuter[(y*2)*width_*3];
-                    const unsigned char* inOuterLower = &inOuter[(y*2+1)*width_*3];
-                    const unsigned char* inInnerUpper = &inInner[(y*2)*width_*3];
-                    const unsigned char* inInnerLower = &inInner[(y*2+1)*width_*3];
-                    unsigned char* out = &pixelDataOut[z*widthOut*heightOut*3 + y*widthOut*3];
+                    const unsigned char* inOuterUpper = &inOuter[(y * 2) * width_ * 3];
+                    const unsigned char* inOuterLower = &inOuter[(y * 2 + 1) * width_ * 3];
+                    const unsigned char* inInnerUpper = &inInner[(y * 2) * width_ * 3];
+                    const unsigned char* inInnerLower = &inInner[(y * 2 + 1) * width_ * 3];
+                    unsigned char* out = &pixelDataOut[z * widthOut * heightOut * 3 + y * widthOut * 3];
 
-                    for (int x = 0; x < widthOut*3; x += 3)
+                    for (int x = 0; x < widthOut * 3; x += 3)
                     {
-                        out[x] = ((unsigned)inOuterUpper[x*2] + inOuterUpper[x*2+3] + inOuterLower[x*2] + inOuterLower[x*2+3] +
-                            inInnerUpper[x*2] + inInnerUpper[x*2+3] + inInnerLower[x*2] + inInnerLower[x*2+3]) >> 3;
-                        out[x+1] = ((unsigned)inOuterUpper[x*2+1] + inOuterUpper[x*2+4] + inOuterLower[x*2+1] + inOuterLower[x*2+4] +
-                            inInnerUpper[x*2+1] + inInnerUpper[x*2+4] + inInnerLower[x*2+1] + inInnerLower[x*2+4]) >> 3;
-                        out[x+2] = ((unsigned)inOuterUpper[x*2+2] + inOuterUpper[x*2+5] + inOuterLower[x*2+2] + inOuterLower[x*2+5] +
-                            inInnerUpper[x*2+2] + inInnerUpper[x*2+5] + inInnerLower[x*2+2] + inInnerLower[x*2+5]) >> 3;
+                        out[x] = (unsigned char)(((unsigned)inOuterUpper[x * 2] + inOuterUpper[x * 2 + 3] +
+                                                  inOuterLower[x * 2] + inOuterLower[x * 2 + 3] +
+                                                  inInnerUpper[x * 2] + inInnerUpper[x * 2 + 3] +
+                                                  inInnerLower[x * 2] + inInnerLower[x * 2 + 3]) >> 3);
+                        out[x + 1] = (unsigned char)(((unsigned)inOuterUpper[x * 2 + 1] + inOuterUpper[x * 2 + 4] +
+                                                      inOuterLower[x * 2 + 1] + inOuterLower[x * 2 + 4] +
+                                                      inInnerUpper[x * 2 + 1] + inInnerUpper[x * 2 + 4] +
+                                                      inInnerLower[x * 2 + 1] + inInnerLower[x * 2 + 4]) >> 3);
+                        out[x + 2] = (unsigned char)(((unsigned)inOuterUpper[x * 2 + 2] + inOuterUpper[x * 2 + 5] +
+                                                      inOuterLower[x * 2 + 2] + inOuterLower[x * 2 + 5] +
+                                                      inInnerUpper[x * 2 + 2] + inInnerUpper[x * 2 + 5] +
+                                                      inInnerLower[x * 2 + 2] + inInnerLower[x * 2 + 5]) >> 3);
                     }
                 }
             }
@@ -1397,28 +1619,38 @@ SharedPtr<Image> Image::GetNextLevel() const
         case 4:
             for (int z = 0; z < depthOut; ++z)
             {
-                const unsigned char* inOuter = &pixelDataIn[(z*2)*width_*height_*4];
-                const unsigned char* inInner = &pixelDataIn[(z*2+1)*width_*height_*4];
+                const unsigned char* inOuter = &pixelDataIn[(z * 2) * width_ * height_ * 4];
+                const unsigned char* inInner = &pixelDataIn[(z * 2 + 1) * width_ * height_ * 4];
 
                 for (int y = 0; y < heightOut; ++y)
                 {
-                    const unsigned char* inOuterUpper = &inOuter[(y*2)*width_*4];
-                    const unsigned char* inOuterLower = &inOuter[(y*2+1)*width_*4];
-                    const unsigned char* inInnerUpper = &inInner[(y*2)*width_*4];
-                    const unsigned char* inInnerLower = &inInner[(y*2+1)*width_*4];
-                    unsigned char* out = &pixelDataOut[z*widthOut*heightOut*4 + y*widthOut*4];
+                    const unsigned char* inOuterUpper = &inOuter[(y * 2) * width_ * 4];
+                    const unsigned char* inOuterLower = &inOuter[(y * 2 + 1) * width_ * 4];
+                    const unsigned char* inInnerUpper = &inInner[(y * 2) * width_ * 4];
+                    const unsigned char* inInnerLower = &inInner[(y * 2 + 1) * width_ * 4];
+                    unsigned char* out = &pixelDataOut[z * widthOut * heightOut * 4 + y * widthOut * 4];
 
-                    for (int x = 0; x < widthOut*4; x += 4)
+                    for (int x = 0; x < widthOut * 4; x += 4)
                     {
-                        out[x] = ((unsigned)inOuterUpper[x*2] + inOuterUpper[x*2+4] + inOuterLower[x*2] + inOuterLower[x*2+4] +
-                            inInnerUpper[x*2] + inInnerUpper[x*2+4] + inInnerLower[x*2] + inInnerLower[x*2+4]) >> 3;
-                        out[x+1] = ((unsigned)inOuterUpper[x*2+1] + inOuterUpper[x*2+5] + inOuterLower[x*2+1] + inOuterLower[x*2+5] +
-                            inInnerUpper[x*2+1] + inInnerUpper[x*2+5] + inInnerLower[x*2+1] + inInnerLower[x*2+5]) >> 3;
-                        out[x+2] = ((unsigned)inOuterUpper[x*2+2] + inOuterUpper[x*2+6] + inOuterLower[x*2+2] + inOuterLower[x*2+6] +
-                            inInnerUpper[x*2+2] + inInnerUpper[x*2+6] + inInnerLower[x*2+2] + inInnerLower[x*2+6]) >> 3;
+                        out[x] = (unsigned char)(((unsigned)inOuterUpper[x * 2] + inOuterUpper[x * 2 + 4] +
+                                                  inOuterLower[x * 2] + inOuterLower[x * 2 + 4] +
+                                                  inInnerUpper[x * 2] + inInnerUpper[x * 2 + 4] +
+                                                  inInnerLower[x * 2] + inInnerLower[x * 2 + 4]) >> 3);
+                        out[x + 1] = (unsigned char)(((unsigned)inOuterUpper[x * 2 + 1] + inOuterUpper[x * 2 + 5] +
+                                                      inOuterLower[x * 2 + 1] + inOuterLower[x * 2 + 5] +
+                                                      inInnerUpper[x * 2 + 1] + inInnerUpper[x * 2 + 5] +
+                                                      inInnerLower[x * 2 + 1] + inInnerLower[x * 2 + 5]) >> 3);
+                        out[x + 2] = (unsigned char)(((unsigned)inOuterUpper[x * 2 + 2] + inOuterUpper[x * 2 + 6] +
+                                                      inOuterLower[x * 2 + 2] + inOuterLower[x * 2 + 6] +
+                                                      inInnerUpper[x * 2 + 2] + inInnerUpper[x * 2 + 6] +
+                                                      inInnerLower[x * 2 + 2] + inInnerLower[x * 2 + 6]) >> 3);
                     }
                 }
             }
+            break;
+
+        default:
+            assert(false);  // Should never reach here
             break;
         }
     }
@@ -1430,17 +1662,17 @@ SharedPtr<Image> Image::ConvertToRGBA() const
 {
     if (IsCompressed())
     {
-        LOGERROR("Can not convert compressed image to RGBA");
+        ATOMIC_LOGERROR("Can not convert compressed image to RGBA");
         return SharedPtr<Image>();
     }
     if (components_ < 1 || components_ > 4)
     {
-        LOGERROR("Illegal number of image components for conversion to RGBA");
+        ATOMIC_LOGERROR("Illegal number of image components for conversion to RGBA");
         return SharedPtr<Image>();
     }
     if (!data_)
     {
-        LOGERROR("Can not convert image without data to RGBA");
+        ATOMIC_LOGERROR("Can not convert image without data to RGBA");
         return SharedPtr<Image>();
     }
 
@@ -1450,14 +1682,14 @@ SharedPtr<Image> Image::ConvertToRGBA() const
 
     SharedPtr<Image> ret(new Image(context_));
     ret->SetSize(width_, height_, depth_, 4);
-    
+
     const unsigned char* src = data_;
     unsigned char* dest = ret->GetData();
 
     switch (components_)
     {
     case 1:
-        for (unsigned i = 0; i < width_ * height_ * depth_; ++i)
+        for (unsigned i = 0; i < static_cast<unsigned>(width_ * height_ * depth_); ++i)
         {
             unsigned char pixel = *src++;
             *dest++ = pixel;
@@ -1468,7 +1700,7 @@ SharedPtr<Image> Image::ConvertToRGBA() const
         break;
 
     case 2:
-        for (unsigned i = 0; i < width_ * height_ * depth_; ++i)
+        for (unsigned i = 0; i < static_cast<unsigned>(width_ * height_ * depth_); ++i)
         {
             unsigned char pixel = *src++;
             *dest++ = pixel;
@@ -1479,13 +1711,17 @@ SharedPtr<Image> Image::ConvertToRGBA() const
         break;
 
     case 3:
-        for (unsigned i = 0; i < width_ * height_ * depth_; ++i)
+        for (unsigned i = 0; i < static_cast<unsigned>(width_ * height_ * depth_); ++i)
         {
             *dest++ = *src++;
             *dest++ = *src++;
             *dest++ = *src++;
             *dest++ = 255;
         }
+        break;
+
+    default:
+        assert(false);  // Should never reach nere
         break;
     }
 
@@ -1498,12 +1734,12 @@ CompressedLevel Image::GetCompressedLevel(unsigned index) const
 
     if (compressedFormat_ == CF_NONE)
     {
-        LOGERROR("Image is not compressed");
+        ATOMIC_LOGERROR("Image is not compressed");
         return level;
     }
     if (index >= numCompressedLevels_)
     {
-        LOGERROR("Compressed image mip level out of bounds");
+        ATOMIC_LOGERROR("Compressed image mip level out of bounds");
         return level;
     }
 
@@ -1528,14 +1764,14 @@ CompressedLevel Image::GetCompressedLevel(unsigned index) const
                 level.depth_ = 1;
 
             level.rowSize_ = level.width_ * level.blockSize_;
-            level.rows_ = level.height_;
+            level.rows_ = (unsigned)level.height_;
             level.data_ = data_.Get() + offset;
             level.dataSize_ = level.depth_ * level.rows_ * level.rowSize_;
 
             if (offset + level.dataSize_ > GetMemoryUse())
             {
-                LOGERROR("Compressed level is outside image data. Offset: " + String(offset) + " Size: " + String(level.dataSize_) +
-                    " Datasize: " + String(GetMemoryUse()));
+                ATOMIC_LOGERROR("Compressed level is outside image data. Offset: " + String(offset) + " Size: " + String(level.dataSize_) +
+                         " Datasize: " + String(GetMemoryUse()));
                 level.data_ = 0;
                 return level;
             }
@@ -1566,14 +1802,14 @@ CompressedLevel Image::GetCompressedLevel(unsigned index) const
                 level.depth_ = 1;
 
             level.rowSize_ = ((level.width_ + 3) / 4) * level.blockSize_;
-            level.rows_ = ((level.height_ + 3) / 4);
+            level.rows_ = (unsigned)((level.height_ + 3) / 4);
             level.data_ = data_.Get() + offset;
             level.dataSize_ = level.depth_ * level.rows_ * level.rowSize_;
 
             if (offset + level.dataSize_ > GetMemoryUse())
             {
-                LOGERROR("Compressed level is outside image data. Offset: " + String(offset) + " Size: " + String(level.dataSize_) +
-                    " Datasize: " + String(GetMemoryUse()));
+                ATOMIC_LOGERROR("Compressed level is outside image data. Offset: " + String(offset) + " Size: " + String(level.dataSize_) +
+                         " Datasize: " + String(GetMemoryUse()));
                 level.data_ = 0;
                 return level;
             }
@@ -1605,13 +1841,13 @@ CompressedLevel Image::GetCompressedLevel(unsigned index) const
             int dataHeight = Max(level.height_, 8);
             level.data_ = data_.Get() + offset;
             level.dataSize_ = (dataWidth * dataHeight * level.blockSize_ + 7) >> 3;
-            level.rows_ = dataHeight;
+            level.rows_ = (unsigned)dataHeight;
             level.rowSize_ = level.dataSize_ / level.rows_;
 
             if (offset + level.dataSize_ > GetMemoryUse())
             {
-                LOGERROR("Compressed level is outside image data. Offset: " + String(offset) + " Size: " + String(level.dataSize_) +
-                    " Datasize: " + String(GetMemoryUse()));
+                ATOMIC_LOGERROR("Compressed level is outside image data. Offset: " + String(offset) + " Size: " + String(level.dataSize_) +
+                         " Datasize: " + String(GetMemoryUse()));
                 level.data_ = 0;
                 return level;
             }
@@ -1634,16 +1870,16 @@ Image* Image::GetSubimage(const IntRect& rect) const
 
     if (depth_ > 1)
     {
-        LOGERROR("Subimage not supported for 3D images");
+        ATOMIC_LOGERROR("Subimage not supported for 3D images");
         return 0;
     }
-    
+
     if (rect.left_ < 0 || rect.top_ < 0 || rect.right_ > width_ || rect.bottom_ > height_ || !rect.Width() || !rect.Height())
     {
-        LOGERROR("Can not get subimage from image " + GetName() + " with invalid region");
+        ATOMIC_LOGERROR("Can not get subimage from image " + GetName() + " with invalid region");
         return 0;
     }
-    
+
     if (!IsCompressed())
     {
         int x = rect.left_;
@@ -1662,7 +1898,7 @@ Image* Image::GetSubimage(const IntRect& rect) const
             dest += width * components_;
             src += width_ * components_;
         }
-    
+
         return image;
     }
     else
@@ -1674,10 +1910,10 @@ Image* Image::GetSubimage(const IntRect& rect) const
         paddedRect.right_ = (rect.right_ / 4) * 4;
         paddedRect.bottom_ = (rect.bottom_ / 4) * 4;
         IntRect currentRect = paddedRect;
-        
+
         PODVector<unsigned char> subimageData;
         unsigned subimageLevels = 0;
-        
+
         // Save as many mips as possible until the next mip would cross a block boundary
         for (unsigned i = 0; i < numCompressedLevels_; ++i)
         {
@@ -1691,17 +1927,17 @@ Image* Image::GetSubimage(const IntRect& rect) const
             unsigned destSize = currentRect.Height() / 4 * destRowSize;
             if (!destSize)
                 break;
-            
+
             subimageData.Resize(destStartOffset + destSize);
             unsigned char* dest = &subimageData[destStartOffset];
-            
+
             for (int y = currentRect.top_; y < currentRect.bottom_; y += 4)
             {
                 unsigned char* src = level.data_ + level.rowSize_ * (y / 4) + currentRect.left_ / 4 * level.blockSize_;
                 memcpy(dest, src, destRowSize);
                 dest += destRowSize;
             }
-            
+
             ++subimageLevels;
             if ((currentRect.left_ & 4) || (currentRect.right_ & 4) || (currentRect.top_ & 4) || (currentRect.bottom_ & 4))
                 break;
@@ -1713,13 +1949,13 @@ Image* Image::GetSubimage(const IntRect& rect) const
                 currentRect.bottom_ /= 2;
             }
         }
-        
+
         if (!subimageLevels)
         {
-            LOGERROR("Subimage region from compressed image " + GetName() + " did not produce any data");
+            ATOMIC_LOGERROR("Subimage region from compressed image " + GetName() + " did not produce any data");
             return 0;
         }
-        
+
         Image* image = new Image(context_);
         image->width_ = paddedRect.Width();
         image->height_ = paddedRect.Height();
@@ -1730,7 +1966,7 @@ Image* Image::GetSubimage(const IntRect& rect) const
         image->data_ = new unsigned char[subimageData.Size()];
         memcpy(image->data_.Get(), &subimageData[0], subimageData.Size());
         image->SetMemoryUse(subimageData.Size());
-        
+
         return image;
     }
 }
@@ -1742,19 +1978,19 @@ SDL_Surface* Image::GetSDLSurface(const IntRect& rect) const
 
     if (depth_ > 1)
     {
-        LOGERROR("Can not get SDL surface from 3D image");
+        ATOMIC_LOGERROR("Can not get SDL surface from 3D image");
         return 0;
     }
-    
+
     if (IsCompressed())
     {
-        LOGERROR("Can not get SDL surface from compressed image " + GetName());
+        ATOMIC_LOGERROR("Can not get SDL surface from compressed image " + GetName());
         return 0;
     }
 
     if (components_ < 3)
     {
-        LOGERROR("Can not get SDL surface from image " + GetName() + " with less than 3 components");
+        ATOMIC_LOGERROR("Can not get SDL surface from image " + GetName() + " with less than 3 components");
         return 0;
     }
 
@@ -1796,7 +2032,7 @@ SDL_Surface* Image::GetSDLSurface(const IntRect& rect) const
         SDL_UnlockSurface(surface);
     }
     else
-        LOGERROR("Failed to create SDL surface from image " + GetName());
+        ATOMIC_LOGERROR("Failed to create SDL surface from image " + GetName());
 
     return surface;
 }
@@ -1806,7 +2042,7 @@ void Image::PrecalculateLevels()
     if (!data_ || IsCompressed())
         return;
 
-    PROFILE(PrecalculateImageMipLevels);
+    ATOMIC_PROFILE(PrecalculateImageMipLevels);
 
     nextLevel_.Reset();
 
@@ -1828,7 +2064,7 @@ unsigned char* Image::GetImageData(Deserializer& source, int& width, int& height
 
     SharedArrayPtr<unsigned char> buffer(new unsigned char[dataSize]);
     source.Read(buffer.Get(), dataSize);
-    return stbi_load_from_memory(buffer.Get(), dataSize, &width, &height, (int *)&components, 0);
+    return stbi_load_from_memory(buffer.Get(), dataSize, &width, &height, (int*)&components, 0);
 }
 
 void Image::FreeImageData(unsigned char* pixelData)
@@ -1838,5 +2074,192 @@ void Image::FreeImageData(unsigned char* pixelData)
 
     stbi_image_free(pixelData);
 }
+
+// ATOMIC BEGIN
+bool Image::SaveDDS(const String& fileName) const
+{
+#if !defined(ATOMIC_PLATFORM_DESKTOP)
+
+    ATOMIC_LOGERRORF("Image::SaveDDS - Unsupported on current platform: %s", fileName.CString());
+    return false;
+
+#else
+    ATOMIC_PROFILE(SaveImageDDS);
+
+    FileSystem* fileSystem = GetSubsystem<FileSystem>();
+    if (fileSystem && !fileSystem->CheckAccess(GetPath(fileName)))
+    {
+        ATOMIC_LOGERROR("Access denied to " + fileName);
+        return false;
+    }
+
+    if (IsCompressed())
+    {
+        ATOMIC_LOGERROR("Can not save compressed image to DDS");
+        return false;
+    }
+
+    if (data_)
+    {
+        // #623 BEGIN TODO: Should have an abstract ImageReader and ImageWriter classes
+        // with subclasses for particular image output types. Also should have image settings in the image meta.
+        // ImageReader/Writers should also support a progress callback so UI can be updated.
+
+        if (!width_ || !height_)
+        {
+            ATOMIC_LOGERRORF("Attempting to save zero width/height DDS to %s", fileName.CString());
+            return false;
+        }
+
+        squish::u8 *inputData = (squish::u8 *) data_.Get();
+
+        SharedPtr<Image> tempImage;
+
+        // libsquish expects 4 channel RGBA, so create a temporary image if necessary
+        if (components_ != 4)
+        {
+            if (components_ != 3)
+            {
+                ATOMIC_LOGERROR("Can only save images with 3 or 4 components to DDS");
+                return false;
+            }
+
+            tempImage = new Image(context_);
+            tempImage->SetSize(width_, height_, 4);
+
+            squish::u8* srcBits = (squish::u8*) data_;
+            squish::u8* dstBits = (squish::u8*) tempImage->data_;
+
+            for (unsigned i = 0; i < (unsigned) width_ * (unsigned) height_; i++)
+            {
+                *dstBits++ = *srcBits++;
+                *dstBits++ = *srcBits++;
+                *dstBits++ = *srcBits++;
+                *dstBits++ = 255;
+            }
+
+            inputData = (squish::u8 *) tempImage->data_.Get();
+        }
+
+        unsigned squishFlags = HasAlphaChannel() ? squish::kDxt5 : squish::kDxt1;
+
+        // Use a slow but high quality colour compressor (the default). (TODO: expose other settings as parameter)
+        squishFlags |= squish::kColourClusterFit;
+
+        unsigned storageRequirements = (unsigned) squish::GetStorageRequirements( width_, height_,  squishFlags);
+
+        SharedArrayPtr<unsigned char> compressedData(new unsigned char[storageRequirements]);
+
+        squish::CompressImage(inputData, width_, height_, compressedData.Get(), squishFlags);
+
+        DDSurfaceDesc2 sdesc;
+
+        if (sizeof(sdesc) != 124)
+        {
+            ATOMIC_LOGERROR("Image::SaveDDS - sizeof(DDSurfaceDesc2) != 124");
+            return false;
+        }
+        memset(&sdesc, 0, sizeof(sdesc));
+        sdesc.dwSize_ = 124;
+        sdesc.dwFlags_ = DDSD_CAPS | DDSD_PIXELFORMAT | DDSD_WIDTH | DDSD_HEIGHT;
+        sdesc.dwWidth_ = width_;
+        sdesc.dwHeight_ = height_;
+
+        sdesc.ddpfPixelFormat_.dwSize_ = 32;
+        sdesc.ddpfPixelFormat_.dwFlags_ = DDPF_FOURCC | (HasAlphaChannel() ? DDPF_ALPHAPIXELS : 0);
+        sdesc.ddpfPixelFormat_.dwFourCC_ = HasAlphaChannel() ? FOURCC_DXT5 : FOURCC_DXT1;
+
+        SharedPtr<File> dest(new File(context_, fileName, FILE_WRITE));
+
+        if (!dest->IsOpen())
+        {
+            ATOMIC_LOGERRORF("Failed to open DXT image file for writing %s", fileName.CString());
+            return false;
+        }
+        else
+        {
+
+            dest->Write((void*)"DDS ", 4);
+            dest->Write((void*)&sdesc, sizeof(sdesc));
+
+            bool success = dest->Write(compressedData.Get(), storageRequirements) == storageRequirements;
+
+            if (!success)
+                ATOMIC_LOGERRORF("Failed to write image to DXT, file size mismatch %s", fileName.CString());
+
+            return success;
+        }
+        // #623 END TODO
+    }
+#endif
+
+    return false;
+}
+
+bool Image::HasAlphaChannel() const
+{
+    return components_ > 3;
+}
+
+bool Image::SetSubimage(const Image* image, const IntRect& rect)
+{
+    if (!data_)
+        return false;
+
+    if (depth_ > 1 || IsCompressed())
+    {
+        ATOMIC_LOGERROR("SetSubimage not supported for Compressed or 3D images");
+        return false;
+    }
+
+    if (rect.left_ < 0 || rect.top_ < 0 || rect.right_ > width_ || rect.bottom_ > height_ || !rect.Width() || !rect.Height())
+    {
+        ATOMIC_LOGERROR("Can not set subimage in image " + GetName() + " with invalid region");
+        return false;
+    }
+
+    int width = rect.Width();
+    int height = rect.Height();
+    if (width == image->GetWidth() && height == image->GetHeight())
+    {
+        int components = Min((int)components_, (int)image->components_);
+
+        unsigned char* src = image->GetData();
+        unsigned char* dest = data_.Get() + (rect.top_ * width_ + rect.left_) * components_;
+        for (int i = 0; i < height; ++i)
+        {
+            memcpy(dest, src, width * components);
+
+            src += width * image->components_;
+            dest += width_ * components_;
+        }
+    }
+    else
+    {
+        unsigned uintColor;
+        unsigned char* dest = data_.Get() + (rect.top_ * width_ + rect.left_) * components_;
+        unsigned char* src = (unsigned char*)&uintColor;
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                // Calculate float coordinates between 0 - 1 for resampling
+                float xF = (image->width_ > 1) ? (float)x / (float)(width - 1) : 0.0f;
+                float yF = (image->height_ > 1) ? (float)y / (float)(height - 1) : 0.0f;
+                uintColor = image->GetPixelBilinear(xF, yF).ToUInt();
+
+                memcpy(dest, src, components_);
+
+                dest += components_;
+            }
+            dest += (width_ - width) * components_;
+        }
+    }
+
+    return true;
+}
+
+
+// ATOMIC END
 
 }

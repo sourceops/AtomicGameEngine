@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,38 +20,38 @@
 // THE SOFTWARE.
 //
 
-#include "../Navigation/DynamicNavigationMesh.h"
+#include "../Precompiled.h"
 
-#include "../Math/BoundingBox.h"
+
 #include "../Core/Context.h"
-#include "../Navigation/CrowdAgent.h"
+#include "../Core/Profiler.h"
 #include "../Graphics/DebugRenderer.h"
 #include "../IO/Log.h"
 #include "../IO/MemoryBuffer.h"
+#include "../Navigation/CrowdAgent.h"
+#include "../Navigation/DynamicNavigationMesh.h"
 #include "../Navigation/NavArea.h"
 #include "../Navigation/NavBuildData.h"
 #include "../Navigation/NavigationEvents.h"
-#include "../Scene/Node.h"
 #include "../Navigation/Obstacle.h"
 #include "../Navigation/OffMeshConnection.h"
-#include "../Core/Profiler.h"
+#include "../Scene/Node.h"
 #include "../Scene/Scene.h"
 #include "../Scene/SceneEvents.h"
 
 #include <LZ4/lz4.h>
-#include <cfloat>
+// ATOMIC BEGIN
 #include <Detour/include/DetourNavMesh.h>
 #include <Detour/include/DetourNavMeshBuilder.h>
-#include <Detour/include/DetourNavMeshQuery.h>
 #include <DetourTileCache/include/DetourTileCache.h>
 #include <DetourTileCache/include/DetourTileCacheBuilder.h>
 #include <Recast/include/Recast.h>
-#include <Recast/include/RecastAlloc.h>
+// ATOMIC END
 
-//DebugNew is deliberately not used because the macro 'free' conflicts DetourTileCache's LinearAllocator interface
+// DebugNew is deliberately not used because the macro 'free' conflicts with DetourTileCache's LinearAllocator interface
 //#include "../DebugNew.h"
 
-#define TILECACHE_MAXLAYERS 128
+static const unsigned TILECACHE_MAXLAYERS = 255;
 
 namespace Atomic
 {
@@ -59,6 +59,7 @@ namespace Atomic
 extern const char* NAVIGATION_CATEGORY;
 
 static const int DEFAULT_MAX_OBSTACLES = 1024;
+static const int DEFAULT_MAX_LAYERS = 16;
 
 struct DynamicNavigationMesh::TileCacheData
 {
@@ -70,7 +71,7 @@ struct TileCompressor : public dtTileCacheCompressor
 {
     virtual int maxCompressedSize(const int bufferSize)
     {
-        return (int)(bufferSize* 1.05f);
+        return (int)(bufferSize * 1.05f);
     }
 
     virtual dtStatus compress(const unsigned char* buffer, const int bufferSize,
@@ -134,9 +135,9 @@ struct MeshProcess : public dtTileCacheMeshProcess
                     offMeshVertices_.Push(start);
                     offMeshVertices_.Push(end);
                     offMeshRadii_.Push(connection->GetRadius());
-                    offMeshFlags_.Push(connection->GetMask());
+                    offMeshFlags_.Push((unsigned short)connection->GetMask());
                     offMeshAreas_.Push((unsigned char)connection->GetAreaID());
-                    offMeshDir_.Push(connection->IsBidirectional() ? DT_OFFMESH_CON_BIDIR : 0);
+                    offMeshDir_.Push((unsigned char)(connection->IsBidirectional() ? DT_OFFMESH_CON_BIDIR : 0));
                 }
             }
             params->offMeshConCount = offMeshRadii_.Size();
@@ -167,7 +168,8 @@ struct LinearAllocator : public dtTileCacheAlloc
     int top;
     int high;
 
-    LinearAllocator(const int cap) : buffer(0), capacity(0), top(0), high(0)
+    LinearAllocator(const int cap) :
+        buffer(0), capacity(0), top(0), high(0)
     {
         resize(cap);
     }
@@ -212,6 +214,7 @@ DynamicNavigationMesh::DynamicNavigationMesh(Context* context) :
     NavigationMesh(context),
     tileCache_(0),
     maxObstacles_(1024),
+    maxLayers_(DEFAULT_MAX_LAYERS),
     drawObstacles_(false)
 {
     //64 is the largest tile-size that DetourTileCache will tolerate without silently failing
@@ -237,14 +240,15 @@ void DynamicNavigationMesh::RegisterObject(Context* context)
 {
     context->RegisterFactory<DynamicNavigationMesh>(NAVIGATION_CATEGORY);
 
-    COPY_BASE_ATTRIBUTES(NavigationMesh);
-    ACCESSOR_ATTRIBUTE("Max Obstacles", GetMaxObstacles, SetMaxObstacles, unsigned, DEFAULT_MAX_OBSTACLES, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Draw Obstacles", GetDrawObstacles, SetDrawObstacles, bool, false, AM_DEFAULT);
+    ATOMIC_COPY_BASE_ATTRIBUTES(NavigationMesh);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Max Obstacles", GetMaxObstacles, SetMaxObstacles, unsigned, DEFAULT_MAX_OBSTACLES, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Max Layers", GetMaxLayers, SetMaxLayers, unsigned, DEFAULT_MAX_LAYERS, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Draw Obstacles", GetDrawObstacles, SetDrawObstacles, bool, false, AM_DEFAULT);
 }
 
 bool DynamicNavigationMesh::Build()
 {
-    PROFILE(BuildNavigationMesh);
+    ATOMIC_PROFILE(BuildNavigationMesh);
     // Release existing navigation data and zero the bounding box
     ReleaseNavigationMesh();
 
@@ -252,7 +256,7 @@ bool DynamicNavigationMesh::Build()
         return false;
 
     if (!node_->GetWorldScale().Equals(Vector3::ONE))
-        LOGWARNING("Navigation mesh root node has scaling. Agent parameters may not work as intended");
+        ATOMIC_LOGWARNING("Navigation mesh root node has scaling. Agent parameters may not work as intended");
 
     Vector<NavigationGeometryInfo> geometryList;
     CollectGeometries(geometryList);
@@ -269,7 +273,7 @@ bool DynamicNavigationMesh::Build()
     boundingBox_.max_ += padding_;
 
     {
-        PROFILE(BuildNavigationMesh);
+        ATOMIC_PROFILE(BuildNavigationMesh);
 
         // Calculate number of tiles
         int gridW = 0, gridH = 0;
@@ -279,7 +283,7 @@ bool DynamicNavigationMesh::Build()
         numTilesZ_ = (gridH + tileSize_ - 1) / tileSize_;
 
         // Calculate max. number of tiles and polygons, 22 bits available to identify both tile & polygon within tile
-        unsigned maxTiles = NextPowerOfTwo(numTilesX_ * numTilesZ_) * TILECACHE_MAXLAYERS;
+        unsigned maxTiles = NextPowerOfTwo((unsigned)(numTilesX_ * numTilesZ_)) * maxLayers_;
         unsigned tileBits = 0;
         unsigned temp = maxTiles;
         while (temp > 1)
@@ -288,7 +292,7 @@ bool DynamicNavigationMesh::Build()
             ++tileBits;
         }
 
-        unsigned maxPolys = 1 << (22 - tileBits);
+        unsigned maxPolys = (unsigned)(1 << (22 - tileBits));
 
         dtNavMeshParams params;
         rcVcopy(params.orig, &boundingBox_.min_.x_);
@@ -300,13 +304,13 @@ bool DynamicNavigationMesh::Build()
         navMesh_ = dtAllocNavMesh();
         if (!navMesh_)
         {
-            LOGERROR("Could not allocate navigation mesh");
+            ATOMIC_LOGERROR("Could not allocate navigation mesh");
             return false;
         }
 
         if (dtStatusFailed(navMesh_->init(&params)))
         {
-            LOGERROR("Could not initialize navigation mesh");
+            ATOMIC_LOGERROR("Could not initialize navigation mesh");
             ReleaseNavigationMesh();
             return false;
         }
@@ -319,7 +323,7 @@ bool DynamicNavigationMesh::Build()
         tileCacheParams.width = tileSize_;
         tileCacheParams.height = tileSize_;
         tileCacheParams.maxSimplificationError = edgeMaxError_;
-        tileCacheParams.maxTiles = numTilesX_ * numTilesZ_ * TILECACHE_MAXLAYERS;
+        tileCacheParams.maxTiles = numTilesX_ * numTilesZ_ * maxLayers_;
         tileCacheParams.maxObstacles = maxObstacles_;
         // Settings from NavigationMesh
         tileCacheParams.walkableClimb = agentMaxClimb_;
@@ -329,14 +333,14 @@ bool DynamicNavigationMesh::Build()
         tileCache_ = dtAllocTileCache();
         if (!tileCache_)
         {
-            LOGERROR("Could not allocate tile cache");
+            ATOMIC_LOGERROR("Could not allocate tile cache");
             ReleaseNavigationMesh();
             return false;
         }
 
         if (dtStatusFailed(tileCache_->init(&tileCacheParams, allocator_, compressor_, meshProcessor_)))
         {
-            LOGERROR("Could not initialize tile cache");
+            ATOMIC_LOGERROR("Could not initialize tile cache");
             ReleaseNavigationMesh();
             return false;
         }
@@ -354,7 +358,7 @@ bool DynamicNavigationMesh::Build()
                 {
                     dtCompressedTileRef tileRef;
                     int status = tileCache_->addTile(tiles[i].data, tiles[i].dataSize, DT_COMPRESSEDTILE_FREE_DATA, &tileRef);
-                    if (dtStatusFailed(status))
+                    if (dtStatusFailed((dtStatus)status))
                     {
                         dtFree(tiles[i].data);
                         tiles[i].data = 0x0;
@@ -367,10 +371,10 @@ bool DynamicNavigationMesh::Build()
         }
 
         // For a full build it's necessary to update the nav mesh
-        // not doing so will cause dependent components to crash, like DetourCrowdManager
+        // not doing so will cause dependent components to crash, like CrowdManager
         tileCache_->update(0, navMesh_);
 
-        LOGDEBUG("Built navigation mesh with " + String(numTiles) + " tiles");
+        ATOMIC_LOGDEBUG("Built navigation mesh with " + String(numTiles) + " tiles");
 
         // Send a notification event to concerned parties that we've been fully rebuilt
         {
@@ -397,19 +401,19 @@ bool DynamicNavigationMesh::Build()
 
 bool DynamicNavigationMesh::Build(const BoundingBox& boundingBox)
 {
-    PROFILE(BuildPartialNavigationMesh);
+    ATOMIC_PROFILE(BuildPartialNavigationMesh);
 
     if (!node_)
         return false;
 
     if (!navMesh_)
     {
-        LOGERROR("Navigation mesh must first be built fully before it can be partially rebuilt");
+        ATOMIC_LOGERROR("Navigation mesh must first be built fully before it can be partially rebuilt");
         return false;
     }
 
     if (!node_->GetWorldScale().Equals(Vector3::ONE))
-        LOGWARNING("Navigation mesh root node has scaling. Agent parameters may not work as intended");
+        ATOMIC_LOGWARNING("Navigation mesh root node has scaling. Agent parameters may not work as intended");
 
     BoundingBox localSpaceBox = boundingBox.Transformed(node_->GetWorldTransform().Inverse());
 
@@ -430,7 +434,7 @@ bool DynamicNavigationMesh::Build(const BoundingBox& boundingBox)
         for (int x = sx; x <= ex; ++x)
         {
             dtCompressedTileRef existing[TILECACHE_MAXLAYERS];
-            const int existingCt = tileCache_->getTilesAt(x, z, existing, TILECACHE_MAXLAYERS);
+            const int existingCt = tileCache_->getTilesAt(x, z, existing, maxLayers_);
             for (int i = 0; i < existingCt; ++i)
             {
                 unsigned char* data = 0x0;
@@ -444,7 +448,7 @@ bool DynamicNavigationMesh::Build(const BoundingBox& boundingBox)
             {
                 dtCompressedTileRef tileRef;
                 int status = tileCache_->addTile(tiles[i].data, tiles[i].dataSize, DT_COMPRESSEDTILE_FREE_DATA, &tileRef);
-                if (dtStatusFailed(status))
+                if (dtStatusFailed((dtStatus)status))
                 {
                     dtFree(tiles[i].data);
                     tiles[i].data = 0x0;
@@ -458,7 +462,7 @@ bool DynamicNavigationMesh::Build(const BoundingBox& boundingBox)
         }
     }
 
-    LOGDEBUG("Rebuilt " + String(numTiles) + " tiles of the navigation mesh");
+    ATOMIC_LOGDEBUG("Rebuilt " + String(numTiles) + " tiles of the navigation mesh");
     return true;
 }
 
@@ -490,12 +494,9 @@ void DynamicNavigationMesh::DrawDebugGeometry(DebugRenderer* debug, bool depthTe
                     dtPoly* poly = tile->polys + i;
                     for (unsigned j = 0; j < poly->vertCount; ++j)
                     {
-                        debug->AddLine(
-                            worldTransform * *reinterpret_cast<const Vector3*>(&tile->verts[poly->verts[j] * 3]),
+                        debug->AddLine(worldTransform * *reinterpret_cast<const Vector3*>(&tile->verts[poly->verts[j] * 3]),
                             worldTransform * *reinterpret_cast<const Vector3*>(&tile->verts[poly->verts[(j + 1) % poly->vertCount] * 3]),
-                            Color::YELLOW,
-                            depthTest
-                            );
+                            Color::YELLOW, depthTest);
                     }
                 }
             }
@@ -575,13 +576,13 @@ void DynamicNavigationMesh::SetNavigationDataAttr(const PODVector<unsigned char>
     navMesh_ = dtAllocNavMesh();
     if (!navMesh_)
     {
-        LOGERROR("Could not allocate navigation mesh");
+        ATOMIC_LOGERROR("Could not allocate navigation mesh");
         return;
     }
 
     if (dtStatusFailed(navMesh_->init(&params)))
     {
-        LOGERROR("Could not initialize navigation mesh");
+        ATOMIC_LOGERROR("Could not initialize navigation mesh");
         ReleaseNavigationMesh();
         return;
     }
@@ -592,13 +593,13 @@ void DynamicNavigationMesh::SetNavigationDataAttr(const PODVector<unsigned char>
     tileCache_ = dtAllocTileCache();
     if (!tileCache_)
     {
-        LOGERROR("Could not allocate tile cache");
+        ATOMIC_LOGERROR("Could not allocate tile cache");
         ReleaseNavigationMesh();
         return;
     }
     if (dtStatusFailed(tileCache_->init(&tcParams, allocator_, compressor_, meshProcessor_)))
     {
-        LOGERROR("Could not initialize tile cache");
+        ATOMIC_LOGERROR("Could not initialize tile cache");
         ReleaseNavigationMesh();
         return;
     }
@@ -609,11 +610,11 @@ void DynamicNavigationMesh::SetNavigationDataAttr(const PODVector<unsigned char>
         buffer.Read(&header, sizeof(dtTileCacheLayerHeader));
         const int dataSize = buffer.ReadInt();
         unsigned char* data = (unsigned char*)dtAlloc(dataSize, DT_ALLOC_PERM);
-        buffer.Read(data, dataSize);
+        buffer.Read(data, (unsigned)dataSize);
 
         if (dtStatusFailed(tileCache_->addTile(data, dataSize, DT_TILE_FREE_DATA, 0)))
         {
-            LOGERROR("Failed to add tile");
+            ATOMIC_LOGERROR("Failed to add tile");
             dtFree(data);
             return;
         }
@@ -648,7 +649,7 @@ PODVector<unsigned char> DynamicNavigationMesh::GetNavigationDataAttr() const
             for (int x = 0; x < numTilesX_; ++x)
             {
                 dtCompressedTileRef tiles[TILECACHE_MAXLAYERS];
-                const int ct = tileCache_->getTilesAt(x, z, tiles, TILECACHE_MAXLAYERS);
+                const int ct = tileCache_->getTilesAt(x, z, tiles, maxLayers_);
                 for (int i = 0; i < ct; ++i)
                 {
                     const dtCompressedTile* tile = tileCache_->getTileByRef(tiles[i]);
@@ -657,7 +658,7 @@ PODVector<unsigned char> DynamicNavigationMesh::GetNavigationDataAttr() const
                     // The header conveniently has the majority of the information required
                     ret.Write(tile->header, sizeof(dtTileCacheLayerHeader));
                     ret.WriteInt(tile->dataSize);
-                    ret.Write(tile->data, tile->dataSize);
+                    ret.Write(tile->data, (unsigned)tile->dataSize);
                 }
             }
         }
@@ -665,24 +666,29 @@ PODVector<unsigned char> DynamicNavigationMesh::GetNavigationDataAttr() const
     return ret.GetBuffer();
 }
 
+void DynamicNavigationMesh::SetMaxLayers(unsigned maxLayers)
+{
+    // Set 3 as a minimum due to the tendency of layers to be constructed inside the hollow space of stacked objects
+    // That behavior is unlikely to be expected by the end user
+    maxLayers_ = Max(3U, Min(maxLayers, TILECACHE_MAXLAYERS));
+}
+
 int DynamicNavigationMesh::BuildTile(Vector<NavigationGeometryInfo>& geometryList, int x, int z, TileCacheData* tiles)
 {
-    PROFILE(BuildNavigationMeshTile);
+    ATOMIC_PROFILE(BuildNavigationMeshTile);
 
     tileCache_->removeTile(navMesh_->getTileRefAt(x, z, 0), 0, 0);
 
     float tileEdgeLength = (float)tileSize_ * cellSize_;
 
     BoundingBox tileBoundingBox(Vector3(
-        boundingBox_.min_.x_ + tileEdgeLength * (float)x,
-        boundingBox_.min_.y_,
-        boundingBox_.min_.z_ + tileEdgeLength * (float)z
-        ),
+            boundingBox_.min_.x_ + tileEdgeLength * (float)x,
+            boundingBox_.min_.y_,
+            boundingBox_.min_.z_ + tileEdgeLength * (float)z),
         Vector3(
-        boundingBox_.min_.x_ + tileEdgeLength * (float)(x + 1),
-        boundingBox_.max_.y_,
-        boundingBox_.min_.z_ + tileEdgeLength * (float)(z + 1)
-        ));
+            boundingBox_.min_.x_ + tileEdgeLength * (float)(x + 1),
+            boundingBox_.max_.y_,
+            boundingBox_.min_.z_ + tileEdgeLength * (float)(z + 1)));
 
     DynamicNavBuildData build(allocator_);
 
@@ -722,14 +728,14 @@ int DynamicNavigationMesh::BuildTile(Vector<NavigationGeometryInfo>& geometryLis
     build.heightField_ = rcAllocHeightfield();
     if (!build.heightField_)
     {
-        LOGERROR("Could not allocate heightfield");
+        ATOMIC_LOGERROR("Could not allocate heightfield");
         return 0;
     }
 
     if (!rcCreateHeightfield(build.ctx_, *build.heightField_, cfg.width, cfg.height, cfg.bmin, cfg.bmax, cfg.cs,
         cfg.ch))
     {
-        LOGERROR("Could not create heightfield");
+        ATOMIC_LOGERROR("Could not create heightfield");
         return 0;
     }
 
@@ -749,36 +755,37 @@ int DynamicNavigationMesh::BuildTile(Vector<NavigationGeometryInfo>& geometryLis
     build.compactHeightField_ = rcAllocCompactHeightfield();
     if (!build.compactHeightField_)
     {
-        LOGERROR("Could not allocate create compact heightfield");
+        ATOMIC_LOGERROR("Could not allocate create compact heightfield");
         return 0;
     }
     if (!rcBuildCompactHeightfield(build.ctx_, cfg.walkableHeight, cfg.walkableClimb, *build.heightField_,
         *build.compactHeightField_))
     {
-        LOGERROR("Could not build compact heightfield");
+        ATOMIC_LOGERROR("Could not build compact heightfield");
         return 0;
     }
     if (!rcErodeWalkableArea(build.ctx_, cfg.walkableRadius, *build.compactHeightField_))
     {
-        LOGERROR("Could not erode compact heightfield");
+        ATOMIC_LOGERROR("Could not erode compact heightfield");
         return 0;
     }
 
     // area volumes
     for (unsigned i = 0; i < build.navAreas_.Size(); ++i)
-        rcMarkBoxArea(build.ctx_, &build.navAreas_[i].bounds_.min_.x_, &build.navAreas_[i].bounds_.max_.x_, build.navAreas_[i].areaID_, *build.compactHeightField_);
+        rcMarkBoxArea(build.ctx_, &build.navAreas_[i].bounds_.min_.x_, &build.navAreas_[i].bounds_.max_.x_,
+            build.navAreas_[i].areaID_, *build.compactHeightField_);
 
     if (this->partitionType_ == NAVMESH_PARTITION_WATERSHED)
     {
         if (!rcBuildDistanceField(build.ctx_, *build.compactHeightField_))
         {
-            LOGERROR("Could not build distance field");
+            ATOMIC_LOGERROR("Could not build distance field");
             return 0;
         }
         if (!rcBuildRegions(build.ctx_, *build.compactHeightField_, cfg.borderSize, cfg.minRegionArea,
             cfg.mergeRegionArea))
         {
-            LOGERROR("Could not build regions");
+            ATOMIC_LOGERROR("Could not build regions");
             return 0;
         }
     }
@@ -786,7 +793,7 @@ int DynamicNavigationMesh::BuildTile(Vector<NavigationGeometryInfo>& geometryLis
     {
         if (!rcBuildRegionsMonotone(build.ctx_, *build.compactHeightField_, cfg.borderSize, cfg.minRegionArea, cfg.mergeRegionArea))
         {
-            LOGERROR("Could not build monotone regions");
+            ATOMIC_LOGERROR("Could not build monotone regions");
             return 0;
         }
     }
@@ -794,13 +801,14 @@ int DynamicNavigationMesh::BuildTile(Vector<NavigationGeometryInfo>& geometryLis
     build.heightFieldLayers_ = rcAllocHeightfieldLayerSet();
     if (!build.heightFieldLayers_)
     {
-        LOGERROR("Could not allocate height field layer set");
+        ATOMIC_LOGERROR("Could not allocate height field layer set");
         return 0;
     }
 
-    if (!rcBuildHeightfieldLayers(build.ctx_, *build.compactHeightField_, cfg.borderSize, cfg.walkableHeight, *build.heightFieldLayers_))
+    if (!rcBuildHeightfieldLayers(build.ctx_, *build.compactHeightField_, cfg.borderSize, cfg.walkableHeight,
+        *build.heightFieldLayers_))
     {
-        LOGERROR("Could not build height field layers");
+        ATOMIC_LOGERROR("Could not build height field layers");
         return 0;
     }
 
@@ -828,9 +836,11 @@ int DynamicNavigationMesh::BuildTile(Vector<NavigationGeometryInfo>& geometryLis
         header.hmin = (unsigned short)layer->hmin;
         header.hmax = (unsigned short)layer->hmax;
 
-        if (dtStatusFailed(dtBuildTileCacheLayer(compressor_/*compressor*/, &header, layer->heights, layer->areas/*areas*/, layer->cons, &(tiles[retCt].data), &tiles[retCt].dataSize)))
+        if (dtStatusFailed(
+            dtBuildTileCacheLayer(compressor_/*compressor*/, &header, layer->heights, layer->areas/*areas*/, layer->cons,
+                &(tiles[retCt].data), &tiles[retCt].dataSize)))
         {
-            LOGERROR("Failed to build tile cache layers");
+            ATOMIC_LOGERROR("Failed to build tile cache layers");
             return 0;
         }
         else
@@ -881,11 +891,13 @@ void DynamicNavigationMesh::ReleaseTileCache()
     tileCache_ = 0;
 }
 
-void DynamicNavigationMesh::OnNodeSet(Node* node)
+void DynamicNavigationMesh::OnSceneSet(Scene* scene)
 {
     // Subscribe to the scene subsystem update, which will trigger the tile cache to update the nav mesh
-    if (node)
-        SubscribeToEvent(node, E_SCENESUBSYSTEMUPDATE, HANDLER(DynamicNavigationMesh, HandleSceneSubsystemUpdate));
+    if (scene)
+        SubscribeToEvent(scene, E_SCENESUBSYSTEMUPDATE, ATOMIC_HANDLER(DynamicNavigationMesh, HandleSceneSubsystemUpdate));
+    else
+        UnsubscribeFromEvent(E_SCENESUBSYSTEMUPDATE);
 }
 
 void DynamicNavigationMesh::AddObstacle(Obstacle* obstacle, bool silent)
@@ -897,14 +909,14 @@ void DynamicNavigationMesh::AddObstacle(Obstacle* obstacle, bool silent)
         rcVcopy(pos, &obsPos.x_);
         dtObstacleRef refHolder;
 
-        // Because dtTileCache doesn't process obstacle requests while updating tiles 
+        // Because dtTileCache doesn't process obstacle requests while updating tiles
         // it's necessary update until sufficient request space is available
         while (tileCache_->isObstacleQueueFull())
             tileCache_->update(1, navMesh_);
 
         if (dtStatusFailed(tileCache_->addObstacle(pos, obstacle->GetRadius(), obstacle->GetHeight(), &refHolder)))
         {
-            LOGERROR("Failed to add obstacle");
+            ATOMIC_LOGERROR("Failed to add obstacle");
             return;
         }
         obstacle->obstacleId_ = refHolder;
@@ -937,14 +949,14 @@ void DynamicNavigationMesh::RemoveObstacle(Obstacle* obstacle, bool silent)
 {
     if (tileCache_ && obstacle->obstacleId_ > 0)
     {
-        // Because dtTileCache doesn't process obstacle requests while updating tiles 
+        // Because dtTileCache doesn't process obstacle requests while updating tiles
         // it's necessary update until sufficient request space is available
         while (tileCache_->isObstacleQueueFull())
             tileCache_->update(1, navMesh_);
 
         if (dtStatusFailed(tileCache_->removeObstacle(obstacle->obstacleId_)))
         {
-            LOGERROR("Failed to remove obstacle");
+            ATOMIC_LOGERROR("Failed to remove obstacle");
             return;
         }
         obstacle->obstacleId_ = 0;

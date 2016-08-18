@@ -1,3 +1,24 @@
+//
+// Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #include <Atomic/IO/Log.h>
 
@@ -9,9 +30,9 @@
 
 namespace Atomic
 {
-    
+
     typedef bool(*atomic_plugin_validate_function)(int version, void *jsvmImports, size_t jsvmImportsSize);
- 
+
     static void jsplugin_bind_jsvmexports();
     static JSVMImports gJSVMExports;
 
@@ -26,7 +47,9 @@ namespace Atomic
 
         if (handle == NULL)
         {
-            errorMsg = ToString("Native Plugin: Unable to load %s", pluginLibrary.CString());
+            errorMsg = ToString("Native Plugin: Unable to load %s with error %s",
+                pluginLibrary.CString(),
+                SDL_GetError());
             return false;
         }
 
@@ -42,7 +65,7 @@ namespace Atomic
 
         if (!*finit)
         {
-            LOGERRORF("Native Plugin: Unable to get atomic_plugin_init entry point in %s", pluginLibrary.CString());
+            ATOMIC_LOGERRORF("Native Plugin: Unable to get atomic_plugin_init entry point in %s", pluginLibrary.CString());
             return false;
         }
 
@@ -58,18 +81,18 @@ namespace Atomic
 
          duk_context* ctx = vm->GetJSContext();
 
-         LOGINFOF("Loading Native Plugin: %s", pluginLibrary.CString());
+         ATOMIC_LOGINFOF("Loading Native Plugin: %s", pluginLibrary.CString());
 
          if (!jsplugin_get_entry_points(pluginLibrary, &validatefunc, &initfunc, errorMsg))
          {
-             LOGERRORF("%s", errorMsg.CString());
+             ATOMIC_LOGERRORF("%s", errorMsg.CString());
              return false;
          }
 
          int version = ATOMIC_JSPLUGIN_VERSION;
          if (!validatefunc(version, &gJSVMExports, sizeof(JSVMImports)))
          {
-             LOGERRORF("Native Plugin: atomic_plugin_validate failed: %s", pluginLibrary.CString());
+             ATOMIC_LOGERRORF("Native Plugin: atomic_plugin_validate failed: %s", pluginLibrary.CString());
              return false;
          }
 
@@ -86,14 +109,16 @@ namespace Atomic
         if (duk_pcall(ctx, 1) != DUK_EXEC_SUCCESS)
         {
             success = false;
-            LOGERRORF("Native Plugin: error calling atomic_plugin_init %s", pluginLibrary.CString());
+            ATOMIC_LOGERRORF("Native Plugin: error calling atomic_plugin_init %s with error %s",
+                pluginLibrary.CString(),
+                duk_safe_to_string(ctx, -1));
         }
         else
         {
             if (!duk_is_boolean(ctx, -1) || !duk_to_boolean(ctx, -1))
             {
                 success = false;
-                LOGERRORF("Native Plugin: error calling atomic_plugin_init, didn't return true %s", pluginLibrary.CString());
+                ATOMIC_LOGERRORF("Native Plugin: error calling atomic_plugin_init, didn't return true %s", pluginLibrary.CString());
             }
         }
 
@@ -219,10 +244,10 @@ namespace Atomic
         gJSVMExports.duk_is_bound_function = duk_is_bound_function;
         gJSVMExports.duk_is_thread = duk_is_thread;
 
-        gJSVMExports.duk_is_callable = duk_is_callable;
+        //gJSVMExports.duk_is_callable = duk_is_callable;
         gJSVMExports.duk_is_dynamic_buffer = duk_is_dynamic_buffer;
         gJSVMExports.duk_is_fixed_buffer = duk_is_fixed_buffer;
-        gJSVMExports.duk_is_primitive = duk_is_primitive;
+        //gJSVMExports.duk_is_primitive = duk_is_primitive;
         gJSVMExports.duk_get_error_code = duk_get_error_code;
 
         gJSVMExports.duk_get_boolean = duk_get_boolean;

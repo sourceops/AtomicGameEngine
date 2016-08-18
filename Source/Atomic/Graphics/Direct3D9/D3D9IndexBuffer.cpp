@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,7 +20,8 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../../Precompiled.h"
+
 #include "../../Core/Context.h"
 #include "../../Graphics/Graphics.h"
 #include "../../Graphics/GraphicsImpl.h"
@@ -32,134 +33,63 @@
 namespace Atomic
 {
 
-IndexBuffer::IndexBuffer(Context* context) :
-    Object(context),
-    GPUObject(GetSubsystem<Graphics>()),
-    indexCount_(0),
-    indexSize_(0),
-    pool_(D3DPOOL_MANAGED),
-    usage_(0),
-    lockState_(LOCK_NONE),
-    lockStart_(0),
-    lockCount_(0),
-    lockScratchData_(0),
-    shadowed_(false)
-{
-    // Force shadowing mode if graphics subsystem does not exist
-    if (!graphics_)
-        shadowed_ = true;
-}
-
-IndexBuffer::~IndexBuffer()
-{
-    Release();
-}
-
 void IndexBuffer::OnDeviceLost()
 {
-    if (pool_ == D3DPOOL_DEFAULT)
+    // Dynamic buffers are in the default pool and need to be released on device loss
+    if (dynamic_)
         Release();
 }
 
 void IndexBuffer::OnDeviceReset()
 {
-    if (pool_ == D3DPOOL_DEFAULT || !object_)
+    // Dynamic buffers are in the default pool and need to be recreated after device reset
+    if (dynamic_ || !object_.ptr_)
     {
         Create();
         dataLost_ = !UpdateToGPU();
     }
     else if (dataPending_)
         dataLost_ = !UpdateToGPU();
-    
+
     dataPending_ = false;
 }
 
 void IndexBuffer::Release()
 {
     Unlock();
-    
-    if (object_)
-    {
-        if (!graphics_)
-            return;
-        
-        if (graphics_->GetIndexBuffer() == this)
-            graphics_->SetIndexBuffer(0);
-        
-        ((IDirect3DIndexBuffer9*)object_)->Release();
-        object_ = 0;
-    }
-}
 
-void IndexBuffer::SetShadowed(bool enable)
-{
-    // If no graphics subsystem, can not disable shadowing
-    if (!graphics_)
-        enable = true;
-    
-    if (enable != shadowed_)
-    {
-        if (enable && indexCount_ && indexSize_)
-            shadowData_ = new unsigned char[indexCount_ * indexSize_];
-        else
-            shadowData_.Reset();
-        
-        shadowed_ = enable;
-    }
-}
+    if (graphics_ && graphics_->GetIndexBuffer() == this)
+        graphics_->SetIndexBuffer(0);
 
-bool IndexBuffer::SetSize(unsigned indexCount, bool largeIndices, bool dynamic)
-{
-    Unlock();
-    
-    if (dynamic)
-    {
-        pool_ = D3DPOOL_DEFAULT;
-        usage_ = D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY;
-    }
-    else
-    {
-        pool_ = D3DPOOL_MANAGED;
-        usage_ = 0;
-    }
-    
-    indexCount_ = indexCount;
-    indexSize_ = largeIndices ? sizeof(unsigned) : sizeof(unsigned short);
-    
-    if (shadowed_ && indexCount_ && indexSize_)
-        shadowData_ = new unsigned char[indexCount_ * indexSize_];
-    else
-        shadowData_.Reset();
-    
-    return Create();
+    ATOMIC_SAFE_RELEASE(object_.ptr_);
 }
 
 bool IndexBuffer::SetData(const void* data)
 {
     if (!data)
     {
-        LOGERROR("Null pointer for index buffer data");
+        ATOMIC_LOGERROR("Null pointer for index buffer data");
         return false;
     }
-    
+
     if (!indexSize_)
     {
-        LOGERROR("Index size not defined, can not set index buffer data");
+        ATOMIC_LOGERROR("Index size not defined, can not set index buffer data");
         return false;
     }
-    
+
     if (shadowData_ && data != shadowData_.Get())
         memcpy(shadowData_.Get(), data, indexCount_ * indexSize_);
-    
-    if (object_)
+
+    if (object_.ptr_)
     {
         if (graphics_->IsDeviceLost())
         {
-            LOGWARNING("Index buffer data assignment while device is lost");
+            ATOMIC_LOGWARNING("Index buffer data assignment while device is lost");
             dataPending_ = true;
             return true;
         }
-        
+
         void* hwData = MapBuffer(0, indexCount_, true);
         if (hwData)
         {
@@ -169,7 +99,7 @@ bool IndexBuffer::SetData(const void* data)
         else
             return false;
     }
-    
+
     dataLost_ = false;
     return true;
 }
@@ -178,40 +108,40 @@ bool IndexBuffer::SetDataRange(const void* data, unsigned start, unsigned count,
 {
     if (start == 0 && count == indexCount_)
         return SetData(data);
-    
+
     if (!data)
     {
-        LOGERROR("Null pointer for index buffer data");
+        ATOMIC_LOGERROR("Null pointer for index buffer data");
         return false;
     }
-    
+
     if (!indexSize_)
     {
-        LOGERROR("Index size not defined, can not set index buffer data");
+        ATOMIC_LOGERROR("Index size not defined, can not set index buffer data");
         return false;
     }
-    
+
     if (start + count > indexCount_)
     {
-        LOGERROR("Illegal range for setting new index buffer data");
+        ATOMIC_LOGERROR("Illegal range for setting new index buffer data");
         return false;
     }
-    
+
     if (!count)
         return true;
-    
+
     if (shadowData_ && shadowData_.Get() + start * indexSize_ != data)
         memcpy(shadowData_.Get() + start * indexSize_, data, count * indexSize_);
-    
-    if (object_)
+
+    if (object_.ptr_)
     {
         if (graphics_->IsDeviceLost())
         {
-            LOGWARNING("Index buffer data assignment while device is lost");
+            ATOMIC_LOGWARNING("Index buffer data assignment while device is lost");
             dataPending_ = true;
             return true;
         }
-        
+
         void* hwData = MapBuffer(start, count, discard);
         if (hwData)
         {
@@ -229,30 +159,30 @@ void* IndexBuffer::Lock(unsigned start, unsigned count, bool discard)
 {
     if (lockState_ != LOCK_NONE)
     {
-        LOGERROR("Index buffer already locked");
+        ATOMIC_LOGERROR("Index buffer already locked");
         return 0;
     }
-    
+
     if (!indexSize_)
     {
-        LOGERROR("Index size not defined, can not lock index buffer");
+        ATOMIC_LOGERROR("Index size not defined, can not lock index buffer");
         return 0;
     }
-    
+
     if (start + count > indexCount_)
     {
-        LOGERROR("Illegal range for locking index buffer");
+        ATOMIC_LOGERROR("Illegal range for locking index buffer");
         return 0;
     }
-    
+
     if (!count)
         return 0;
-    
+
     lockStart_ = start;
     lockCount_ = count;
-    
+
     // Because shadow data must be kept in sync, can only lock hardware buffer if not shadowed
-    if (object_ && !shadowData_ && !graphics_->IsDeviceLost())
+    if (object_.ptr_ && !shadowData_ && !graphics_->IsDeviceLost())
         return MapBuffer(start, count, discard);
     else if (shadowData_)
     {
@@ -276,12 +206,12 @@ void IndexBuffer::Unlock()
     case LOCK_HARDWARE:
         UnmapBuffer();
         break;
-        
+
     case LOCK_SHADOW:
         SetDataRange(shadowData_.Get() + lockStart_ * indexSize_, lockStart_, lockCount_);
         lockState_ = LOCK_NONE;
         break;
-        
+
     case LOCK_SCRATCH:
         SetDataRange(lockScratchData_, lockStart_, lockCount_);
         if (graphics_)
@@ -289,95 +219,51 @@ void IndexBuffer::Unlock()
         lockScratchData_ = 0;
         lockState_ = LOCK_NONE;
         break;
-    }
-}
 
-bool IndexBuffer::IsDynamic() const
-{
-    return pool_ == D3DPOOL_DEFAULT;
-}
-
-bool IndexBuffer::GetUsedVertexRange(unsigned start, unsigned count, unsigned& minVertex, unsigned& vertexCount)
-{
-    if (!shadowData_)
-    {
-        LOGERROR("Used vertex range can only be queried from an index buffer with shadow data");
-        return false;
+    default: break;
     }
-    
-    if (start + count > indexCount_)
-    {
-        LOGERROR("Illegal index range for querying used vertices");
-        return false;
-    }
-    
-    minVertex = M_MAX_UNSIGNED;
-    unsigned maxVertex = 0;
-    
-    if (indexSize_ == sizeof(unsigned))
-    {
-        unsigned* indices = ((unsigned*)shadowData_.Get()) + start;
-        
-        for (unsigned i = 0; i < count; ++i)
-        {
-            if (indices[i] < minVertex)
-                minVertex = indices[i];
-            if (indices[i] > maxVertex)
-                maxVertex = indices[i];
-        }
-    }
-    else
-    {
-        unsigned short* indices = ((unsigned short*)shadowData_.Get()) + start;
-        
-        for (unsigned i = 0; i < count; ++i)
-        {
-            if (indices[i] < minVertex)
-                minVertex = indices[i];
-            if (indices[i] > maxVertex)
-                maxVertex = indices[i];
-        }
-    }
-    
-    vertexCount = maxVertex - minVertex + 1;
-    return true;
 }
 
 bool IndexBuffer::Create()
 {
     Release();
-    
+
     if (!indexCount_)
         return true;
-    
+
     if (graphics_)
     {
         if (graphics_->IsDeviceLost())
         {
-            LOGWARNING("Index buffer creation while device is lost");
+            ATOMIC_LOGWARNING("Index buffer creation while device is lost");
             return true;
         }
-        
+
+        unsigned pool = dynamic_ ? D3DPOOL_DEFAULT : D3DPOOL_MANAGED;
+        unsigned d3dUsage = dynamic_ ? D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY : 0;
+
         IDirect3DDevice9* device = graphics_->GetImpl()->GetDevice();
-        if (!device || FAILED(device->CreateIndexBuffer(
+        HRESULT hr = device->CreateIndexBuffer(
             indexCount_ * indexSize_,
-            usage_,
+            d3dUsage,
             indexSize_ == sizeof(unsigned) ? D3DFMT_INDEX32 : D3DFMT_INDEX16,
-            (D3DPOOL)pool_,
+            (D3DPOOL)pool,
             (IDirect3DIndexBuffer9**)&object_,
-            0)))
+            0);
+        if (FAILED(hr))
         {
-            LOGERROR("Could not create index buffer");
+            ATOMIC_SAFE_RELEASE(object_.ptr_)
+            ATOMIC_LOGD3DERROR("Could not create index buffer", hr);
             return false;
         }
     }
-    
+
     return true;
 }
 
 bool IndexBuffer::UpdateToGPU()
 {
-    if (object_ && shadowData_)
+    if (object_.ptr_ && shadowData_)
         return SetData(shadowData_.Get());
     else
         return false;
@@ -386,28 +272,29 @@ bool IndexBuffer::UpdateToGPU()
 void* IndexBuffer::MapBuffer(unsigned start, unsigned count, bool discard)
 {
     void* hwData = 0;
-    
-    if (object_)
+
+    if (object_.ptr_)
     {
         DWORD flags = 0;
-        
-        if (discard && usage_ & D3DUSAGE_DYNAMIC)
+
+        if (discard && dynamic_)
             flags = D3DLOCK_DISCARD;
-        
-        if (FAILED(((IDirect3DIndexBuffer9*)object_)->Lock(start * indexSize_, count * indexSize_, &hwData, flags)))
-            LOGERROR("Could not lock index buffer");
+
+        HRESULT hr = ((IDirect3DIndexBuffer9*)object_.ptr_)->Lock(start * indexSize_, count * indexSize_, &hwData, flags);
+        if (FAILED(hr))
+            ATOMIC_LOGD3DERROR("Could not lock index buffer", hr);
         else
             lockState_ = LOCK_HARDWARE;
     }
-    
+
     return hwData;
 }
 
 void IndexBuffer::UnmapBuffer()
 {
-    if (object_ && lockState_ == LOCK_HARDWARE)
+    if (object_.ptr_ && lockState_ == LOCK_HARDWARE)
     {
-        ((IDirect3DIndexBuffer9*)object_)->Unlock();
+        ((IDirect3DIndexBuffer9*)object_.ptr_)->Unlock();
         lockState_ = LOCK_NONE;
     }
 }

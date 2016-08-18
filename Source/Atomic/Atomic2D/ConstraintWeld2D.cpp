@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,9 +20,10 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
-#include "../Atomic2D/ConstraintWeld2D.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
+#include "../Atomic2D/ConstraintWeld2D.h"
 #include "../Atomic2D/PhysicsUtils2D.h"
 #include "../Atomic2D/RigidBody2D.h"
 
@@ -30,6 +31,8 @@
 
 namespace Atomic
 {
+
+extern const char* ATOMIC2D_CATEGORY;
 
 ConstraintWeld2D::ConstraintWeld2D(Context* context) :
     Constraint2D(context),
@@ -43,13 +46,13 @@ ConstraintWeld2D::~ConstraintWeld2D()
 
 void ConstraintWeld2D::RegisterObject(Context* context)
 {
-    context->RegisterFactory<ConstraintWeld2D>();
+    context->RegisterFactory<ConstraintWeld2D>(ATOMIC2D_CATEGORY);
 
-    ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Anchor", GetAnchor, SetAnchor, Vector2, Vector2::ZERO, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Frequency Hz", GetFrequencyHz, SetFrequencyHz, float, 0.0f, AM_DEFAULT);
-    ACCESSOR_ATTRIBUTE("Damping Ratio", GetDampingRatio, SetDampingRatio, float, 0.0f, AM_DEFAULT);
-    COPY_BASE_ATTRIBUTES(Constraint2D);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Is Enabled", IsEnabled, SetEnabled, bool, true, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Anchor", GetAnchor, SetAnchor, Vector2, Vector2::ZERO, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Frequency Hz", GetFrequencyHz, SetFrequencyHz, float, 0.0f, AM_DEFAULT);
+    ATOMIC_ACCESSOR_ATTRIBUTE("Damping Ratio", GetDampingRatio, SetDampingRatio, float, 0.0f, AM_DEFAULT);
+    ATOMIC_COPY_BASE_ATTRIBUTES(Constraint2D);
 }
 
 void ConstraintWeld2D::SetAnchor(const Vector2& anchor)

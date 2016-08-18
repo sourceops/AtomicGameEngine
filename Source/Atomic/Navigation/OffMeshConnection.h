@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,7 +30,7 @@ namespace Atomic
 /// A link between otherwise unconnected regions of the navigation mesh.
 class ATOMIC_API OffMeshConnection : public Component
 {
-    OBJECT(OffMeshConnection);
+    ATOMIC_OBJECT(OffMeshConnection, Component);
 
 public:
     /// Construct.
@@ -60,12 +60,16 @@ public:
 
     /// Return endpoint node.
     Node* GetEndPoint() const;
+
     /// Return radius.
     float GetRadius() const { return radius_; }
+
     /// Return whether is bidirectional.
     bool IsBidirectional() const { return bidirectional_; }
+
     /// Return the user assigned mask
     unsigned GetMask() const { return mask_; }
+
     /// Return the user assigned area ID
     unsigned GetAreaID() const { return areaId_; }
 

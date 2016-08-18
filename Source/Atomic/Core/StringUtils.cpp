@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,7 +20,8 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/StringUtils.h"
 
 #include <cstdio>
@@ -92,7 +93,7 @@ bool ToBool(const char* source)
 
     for (unsigned i = 0; i < length; ++i)
     {
-        char c = tolower(source[i]);
+        char c = (char)tolower(source[i]);
         if (c == 't' || c == 'y' || c == '1')
             return true;
         else if (c != ' ' && c != '\t')
@@ -102,31 +103,37 @@ bool ToBool(const char* source)
     return false;
 }
 
-int ToInt(const String& source)
+int ToInt(const String& source, int base)
 {
-    return ToInt(source.CString());
+    return ToInt(source.CString(), base);
 }
 
-int ToInt(const char* source)
+int ToInt(const char* source, int base)
 {
     if (!source)
         return 0;
 
-    // Explicitly ask for base 10 to prevent source starts with '0' or '0x' from being converted to base 8 or base 16, respectively
-    return strtol(source, 0, 10);
+    // Shield against runtime library assert by converting illegal base values to 0 (autodetect)
+    if (base < 2 || base > 36)
+        base = 0;
+
+    return (int)strtol(source, 0, base);
 }
 
-unsigned ToUInt(const String& source)
+unsigned ToUInt(const String& source, int base)
 {
-    return ToUInt(source.CString());
+    return ToUInt(source.CString(), base);
 }
 
-unsigned ToUInt(const char* source)
+unsigned ToUInt(const char* source, int base)
 {
     if (!source)
         return 0;
 
-    return strtoul(source, 0, 10);
+    if (base < 2 || base > 36)
+        base = 0;
+
+    return (unsigned)strtoul(source, 0, base);
 }
 
 float ToFloat(const String& source)
@@ -140,6 +147,19 @@ float ToFloat(const char* source)
         return 0;
 
     return (float)strtod(source, 0);
+}
+
+double ToDouble(const String& source)
+{
+    return ToDouble(source.CString());
+}
+
+double ToDouble(const char* source)
+{
+    if (!source)
+        return 0;
+
+    return strtod(source, 0);
 }
 
 Color ToColor(const String& source)
@@ -383,6 +403,10 @@ Variant ToVectorVariant(const char* source)
     case 16:
         ret.FromString(VAR_MATRIX4, source);
         break;
+
+    default:
+        // Illegal input. Return variant remains empty
+        break;
     }
 
     return ret;
@@ -526,14 +550,14 @@ void BufferToString(String& dest, const void* data, unsigned size)
         }
         else if (bytes[i] < 100)
         {
-            dest[index++] = '0' + bytes[i] / 10;
-            dest[index++] = '0' + bytes[i] % 10;
+            dest[index++] = (char)('0' + bytes[i] / 10);
+            dest[index++] = (char)('0' + bytes[i] % 10);
         }
         else
         {
-            dest[index++] = '0' + bytes[i] / 100;
-            dest[index++] = '0' + bytes[i] % 100 / 10;
-            dest[index++] = '0' + bytes[i] % 10;
+            dest[index++] = (char)('0' + bytes[i] / 100);
+            dest[index++] = (char)('0' + bytes[i] % 100 / 10);
+            dest[index++] = (char)('0' + bytes[i] % 10);
         }
     }
 }
@@ -565,7 +589,7 @@ void StringToBuffer(PODVector<unsigned char>& dest, const char* source)
         if (inSpace && *ptr != ' ')
         {
             inSpace = false;
-            value = *ptr - '0';
+            value = (unsigned)(*ptr - '0');
         }
         else if (!inSpace && *ptr != ' ')
         {
@@ -574,7 +598,7 @@ void StringToBuffer(PODVector<unsigned char>& dest, const char* source)
         }
         else if (!inSpace && *ptr == ' ')
         {
-            dest[index++] = value;
+            dest[index++] = (unsigned char)value;
             inSpace = true;
         }
 
@@ -583,7 +607,7 @@ void StringToBuffer(PODVector<unsigned char>& dest, const char* source)
 
     // Write the final value
     if (!inSpace && index < size)
-        dest[index] = value;
+        dest[index] = (unsigned char)value;
 }
 
 unsigned GetStringListIndex(const String& value, const String* strings, unsigned defaultIndex, bool caseSensitive)
@@ -641,12 +665,48 @@ bool IsDigit(unsigned ch)
 
 unsigned ToUpper(unsigned ch)
 {
-    return toupper(ch);
+    return (unsigned)toupper(ch);
 }
 
 unsigned ToLower(unsigned ch)
 {
-    return tolower(ch);
+    return (unsigned)tolower(ch);
 }
+
+String GetFileSizeString(unsigned long long memorySize)
+{
+    static const char* memorySizeStrings = "kMGTPE";
+
+    String output;
+
+    if (memorySize < 1024)
+    {
+        output = String(memorySize) + " b";
+    }
+    else
+    {
+        const int exponent = (int)(log((double)memorySize) / log(1024.0));
+        const double majorValue = ((double)memorySize) / pow(1024.0, exponent);
+        char buffer[64];
+        memset(buffer, 0, 64);
+        sprintf(buffer, "%.1f", majorValue);
+        output = buffer;
+        output += " ";
+        output += memorySizeStrings[exponent - 1];
+    }
+
+    return output;
+}
+
+// ATOMIC BEGIN
+
+String ToStringVariadic(const char* formatString, va_list args)
+{
+    String ret;
+    ret.AppendWithFormatArgs(formatString, args);
+    return ret;
+}
+
+// ATOMIC END
 
 }

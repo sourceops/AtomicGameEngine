@@ -1,6 +1,24 @@
+//
 // Copyright (c) 2014-2015, THUNDERBEAST GAMES LLC All rights reserved
-// Please see LICENSE.md in repository root for license information
-// https://github.com/AtomicGameEngine/AtomicGameEngine
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
 
 #pragma once
 
@@ -32,7 +50,7 @@ struct Light2DRay
 
 class ATOMIC_API Light2D : public Component
 {
-    OBJECT(Light2D);
+    ATOMIC_OBJECT(Light2D, Component);
 
 public:
     /// Construct.
@@ -42,18 +60,18 @@ public:
     /// Register object factory
     static void RegisterObject(Context* context);
 
-    void SetLightGroup(Light2DGroup* group) { lightgroup_ = group; }
-    Light2DGroup* GetLightGroup() { return lightgroup_; }
+    void SetLightGroupID(int id) { lightgroupID_ = id; }
+    int GetLightGroupID() const { return lightgroupID_; }
 
     const Color& GetColor() const { return color_; }
     void SetColor(const Color& color) { color_ = color; }
 
-    void AddVertices(Vector<Vertex2D>& vertices);
+    void AddVertices(Vector<Vertex2D> &vertices);
 
     virtual void UpdateVertices() {}
 
     void SetNumRays(int numRays);
-    unsigned GetNumRays() const { return rays_.Size(); }
+    int GetNumRays() const { return (int) rays_.Size(); }
 
     virtual void OnSetEnabled();
 
@@ -73,15 +91,20 @@ public:
 
 protected:
 
+    void OnSceneSet(Scene* scene);
+
     void CastRays();
 
+    int lightgroupID_;
     WeakPtr<Light2DGroup> lightgroup_;
+
     Color color_;
     bool castShadows_;
     bool softShadows_;
     bool backtrace_;
     float softShadowLength_;
     PODVector<Light2DRay> rays_;
+    bool raysInitialized_;
     Vector<Vertex2D> vertices_;
     LightType2D lightType_;
 };
@@ -89,7 +112,7 @@ protected:
 
 class ATOMIC_API DirectionalLight2D : public Light2D
 {
-    OBJECT(DirectionalLight2D);
+    ATOMIC_OBJECT(DirectionalLight2D, Light2D);
 
 public:
     /// Construct.
@@ -114,7 +137,7 @@ protected:
 
 class ATOMIC_API PositionalLight2D : public Light2D
 {
-    OBJECT(PositionalLight2D);
+    ATOMIC_OBJECT(PositionalLight2D, Light2D);
 
 public:
     /// Construct.
@@ -133,7 +156,7 @@ protected:
 
 class ATOMIC_API PointLight2D : public PositionalLight2D
 {
-    OBJECT(PointLight2D);
+    ATOMIC_OBJECT(PointLight2D, PositionalLight2D);
 
 public:
     /// Construct.
@@ -158,7 +181,7 @@ protected:
 
 class ATOMIC_API Light2DGroup : public Drawable2D
 {
-    OBJECT(Light2DGroup);
+    ATOMIC_OBJECT(Light2DGroup, Drawable2D);
 
 public:
     /// Construct.
@@ -168,16 +191,20 @@ public:
     /// Register object factory. drawable2d must be registered first.
     static void RegisterObject(Context* context);
 
-    void SetPhysicsWorld(PhysicsWorld2D* physicsWorld);
     PhysicsWorld2D* GetPhysicsWorld() { return physicsWorld_; }
 
-    void AddLight(Light2D* light);
+    void AddLight2D(Light2D* light);
+    void RemoveLight2D(Light2D* light);
+
     Vector<WeakPtr<Light2D> >& GetLights() { return lights_; }
 
     void SetDirty() { /*verticesDirty_ = true;*/ }
 
     void SetAmbientColor(const Color& color);
     const Color& GetAmbientColor() { return ambientColor_; }
+
+    void SetLightGroupID(int id) { lightgroupID_ = id; }
+    int GetLightGroupID() const { return lightgroupID_; }
 
     const BoundingBox& GetFrustumBox() const { return frustumBoundingBox_; }
 
@@ -186,21 +213,21 @@ protected:
     /// Recalculate the world-space bounding box.
     void OnWorldBoundingBoxUpdate();
 
-    void OnNodeSet(Node* node);
+    void OnSceneSet(Scene* scene);
 
     /// Handle draw order changed.
     virtual void OnDrawOrderChanged();
     /// Update source batches.
     virtual void UpdateSourceBatches();
 
-
 private:
 
-    Color ambientColor_;
     void HandleBeginRendering(StringHash eventType, VariantMap& eventData);
     void HandleBeginViewUpdate(StringHash eventType, VariantMap& eventData);
-
     void CreateLight2DMaterial();
+
+    int lightgroupID_;
+    Color ambientColor_;
 
     Vector<WeakPtr<Light2D> > lights_;
 

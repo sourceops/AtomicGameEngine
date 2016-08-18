@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2015 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -20,14 +20,15 @@
 // THE SOFTWARE.
 //
 
-#include "Precompiled.h"
+#include "../Precompiled.h"
+
 #include "../Core/Context.h"
+#include "../Graphics/Texture2D.h"
 #include "../IO/Deserializer.h"
 #include "../Resource/ResourceCache.h"
 #include "../Atomic2D/Drawable2D.h"
 #include "../Atomic2D/Sprite2D.h"
 #include "../Atomic2D/SpriteSheet2D.h"
-#include "../Graphics/Texture2D.h"
 
 #include "../DebugNew.h"
 
@@ -35,9 +36,10 @@ namespace Atomic
 {
 
 Sprite2D::Sprite2D(Context* context) :
-    Resource(context), 
+    Resource(context),
     hotSpot_(0.5f, 0.5f),
-    offset_(0, 0)
+    offset_(0, 0),
+    edgeOffset_(0.0f)
 {
 
 }
@@ -56,7 +58,7 @@ bool Sprite2D::BeginLoad(Deserializer& source)
 {
     if (GetName().Empty())
         SetName(source.GetName());
-    
+
     // Reload
     if (texture_)
         loadTexture_ = texture_;
@@ -75,7 +77,7 @@ bool Sprite2D::BeginLoad(Deserializer& source)
         loadTexture_.Reset();
         return false;
     }
-    
+
     return true;
 }
 
@@ -87,7 +89,7 @@ bool Sprite2D::EndLoad()
     {
         success = true;
         SetTexture(loadTexture_);
-        
+
         if (texture_)
             SetRectangle(IntRect(0, 0, texture_->GetWidth(), texture_->GetHeight()));
     }
@@ -105,6 +107,15 @@ bool Sprite2D::EndLoad()
 void Sprite2D::SetTexture(Texture2D* texture)
 {
     texture_ = texture;
+    // Ensure the texture doesn't have wrap addressing as that will cause bleeding bugs on the edges.
+    // Could also choose border mode, but in that case a universally good border color (without alpha bugs)
+    // would be hard to choose. Ideal is for the user to configure the texture parameters in its parameter
+    // XML file.
+    if (texture_->GetAddressMode(COORD_U) == ADDRESS_WRAP)
+    {
+        texture_->SetAddressMode(COORD_U, ADDRESS_CLAMP);
+        texture_->SetAddressMode(COORD_V, ADDRESS_CLAMP);
+    }
 }
 
 void Sprite2D::SetRectangle(const IntRect& rectangle)
@@ -120,6 +131,11 @@ void Sprite2D::SetHotSpot(const Vector2& hotSpot)
 void Sprite2D::SetOffset(const IntVector2& offset)
 {
     offset_ = offset;
+}
+
+void Sprite2D::SetTextureEdgeOffset(float offset)
+{
+    edgeOffset_ = offset;
 }
 
 void Sprite2D::SetSpriteSheet(SpriteSheet2D* spriteSheet)
@@ -138,23 +154,16 @@ bool Sprite2D::GetDrawRectangle(Rect& rect, const Vector2& hotSpot, bool flipX, 
         return false;
 
     float width = (float)rectangle_.Width() * PIXEL_SIZE;
-    float height = (float)rectangle_.Height() * PIXEL_SIZE;        
+    float height = (float)rectangle_.Height() * PIXEL_SIZE;
 
     float hotSpotX = flipX ? (1.0f - hotSpot.x_) : hotSpot.x_;
     float hotSpotY = flipY ? (1.0f - hotSpot.y_) : hotSpot.y_;
 
-#ifdef ATOMIC_OPENGL
     rect.min_.x_ = -width * hotSpotX;
     rect.max_.x_ = width * (1.0f - hotSpotX);
     rect.min_.y_ = -height * hotSpotY;
     rect.max_.y_ = height * (1.0f - hotSpotY);
-#else
-    const float halfPixelOffset = 0.5f * PIXEL_SIZE;
-    rect.min_.x_ = -width * hotSpotX + halfPixelOffset;
-    rect.max_.x_ = width * (1.0f - hotSpotX) + halfPixelOffset;
-    rect.min_.y_ = -height * hotSpotY + halfPixelOffset;
-    rect.max_.y_ = height * (1.0f - hotSpotY) + halfPixelOffset;
-#endif
+
     return true;
 }
 
@@ -166,15 +175,15 @@ bool Sprite2D::GetTextureRectangle(Rect& rect, bool flipX, bool flipY) const
     float invWidth = 1.0f / (float)texture_->GetWidth();
     float invHeight = 1.0f / (float)texture_->GetHeight();
 
-    rect.min_.x_ = rectangle_.left_ * invWidth;
-    rect.max_.x_ = rectangle_.right_ * invWidth;
+    rect.min_.x_ = ((float)rectangle_.left_ + edgeOffset_) * invWidth;
+    rect.max_.x_ = ((float)rectangle_.right_ - edgeOffset_) * invWidth;
 
-    rect.min_.y_ = rectangle_.bottom_ * invHeight;
-    rect.max_.y_ = rectangle_.top_ * invHeight;
+    rect.min_.y_ = ((float)rectangle_.bottom_ - edgeOffset_) * invHeight;
+    rect.max_.y_ = ((float)rectangle_.top_ + edgeOffset_) * invHeight;
 
     if (flipX)
         Swap(rect.min_.x_, rect.max_.x_);
-    
+
     if (flipY)
         Swap(rect.min_.y_, rect.max_.y_);
 

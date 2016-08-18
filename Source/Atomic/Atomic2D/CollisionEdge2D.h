@@ -1,5 +1,5 @@
 //
-// Copyright (c) 2008-2014 the Urho3D project.
+// Copyright (c) 2008-2016 the Urho3D project.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -30,11 +30,11 @@ namespace Atomic
 /// 2D edge collision component.
 class ATOMIC_API CollisionEdge2D : public CollisionShape2D
 {
-    OBJECT(CollisionEdge2D);
+    ATOMIC_OBJECT(CollisionEdge2D, CollisionShape2D);
 
 public:
     /// Construct.
-    CollisionEdge2D(Context* scontext);
+    CollisionEdge2D(Context* context);
     /// Destruct.
     virtual ~CollisionEdge2D();
     /// Register object factory.
@@ -49,6 +49,7 @@ public:
 
     /// Return vertex 1.
     const Vector2& GetVertex1() const { return vertex1_; }
+
     /// Return vertex 2.
     const Vector2& GetVertex2() const { return vertex2_; }
 
